@@ -259,4 +259,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         cameraHelper?.release()
     }
+crosshairOverlay = findViewById(R.id.crosshairOverlay)
+        crosshairOverlay.phoneCameraView = phoneCameraView // <-- ДОБАВИТЬ ЭТУ СТРОКУ
 }
+
