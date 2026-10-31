@@ -169,16 +169,15 @@ class CrosshairView @JvmOverloads constructor(
                     val corePixels = IntArray(patchSize * patchSize)
                     val outlinePixels = IntArray(patchSize * patchSize)
 
-                    val darkCoreColor = if (isThermal) 0xFF00FF66.toInt() else 0xFFFF3333.toInt() // Неоновый зеленый / красный
-                    val brightCoreColor = 0xFF050505.toInt() // Глубокий черный
-                    val darkOutlineColor = 0xFF000000.toInt() // Черный контур
-                    val brightOutlineColor = 0xFFFFFFFF.toInt() // Белый светящийся контур
+                    val darkCoreColor = if (isThermal) 0xFF00FF66.toInt() else 0xFFFF3333.toInt()
+                    val brightCoreColor = 0xFF050505.toInt()
+                    val darkOutlineColor = 0xFF000000.toInt()
+                    val brightOutlineColor = 0xFFFFFFFF.toInt()
 
                     val center = patchHalf
 
                     for (y in 0 until patchSize) {
                         for (x in 0 until patchSize) {
-                            // Фильтр защиты от самосчитывания линии
                             var sx = x
                             var sy = y
                             if (abs(x - center) <= 3) sx = (x + 5).coerceAtMost(patchSize - 1)
@@ -197,15 +196,13 @@ class CrosshairView @JvmOverloads constructor(
                             val r = (p shr 16) and 0xFF
                             val g = (p shr 8) and 0xFF
                             val b = p and 0xFF
-                            val luma = (r * 77 + g * 150 + b * 29) shr 8 // Быстрый целочисленный расчет яркости
+                            val luma = (r * 77 + g * 150 + b * 29) shr 8
 
                             val idx = y * patchSize + x
                             if (luma > 130) {
-                                // Фон светлый -> пиксель луча ЧЕРНЫЙ, контур БЕЛЫЙ
                                 corePixels[idx] = brightCoreColor
                                 outlinePixels[idx] = brightOutlineColor
                             } else {
-                                // Фон темный -> пиксель луча ЯРКИЙ, контур ЧЕРНЫЙ
                                 corePixels[idx] = darkCoreColor
                                 outlinePixels[idx] = darkOutlineColor
                             }
@@ -271,16 +268,20 @@ class CrosshairView @JvmOverloads constructor(
     private fun drawReticleGeometry(canvas: Canvas, cx: Float, cy: Float, paint: Paint) {
         canvas.drawCircle(cx, cy, ringRadius, paint)
 
-        // Горизонтальный луч
+        // Горизонтальный луч (левый и правый)
         canvas.drawLine(cx - reticleLength, cy, cx - centerGap, cy, paint)
+        canvas.drawLine(cx + centerGap, cy, cx + reticleLength, cy, paint)
+
+        // Горизонтальные риски
         canvas.drawLine(cx - ringRadius, cy - tickLength / 2, cx - ringRadius, cy + tickLength / 2, paint)
-        canvas.drawLine(cx + centerGap, cy, cx + reticleLength, paint)
         canvas.drawLine(cx + ringRadius, cy - tickLength / 2, cx + ringRadius, cy + tickLength / 2, paint)
 
-        // Вертикальный луч
+        // Вертикальный луч (верхний и нижний)
         canvas.drawLine(cx, cy - reticleLength, cx, cy - centerGap, paint)
-        canvas.drawLine(cx - tickLength / 2, cy - ringRadius, cx + tickLength / 2, cy - ringRadius, paint)
         canvas.drawLine(cx, cy + centerGap, cx, cy + reticleLength, paint)
+
+        // Вертикальные риски
+        canvas.drawLine(cx - tickLength / 2, cy - ringRadius, cx + tickLength / 2, cy - ringRadius, paint)
         canvas.drawLine(cx - tickLength / 2, cy + ringRadius, cx + tickLength / 2, cy + ringRadius, paint)
     }
 
