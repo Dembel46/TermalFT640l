@@ -1,6 +1,5 @@
 package com.example.thermalcapture
 
-import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapShader
@@ -8,15 +7,15 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
 import android.view.MotionEvent
-import android.view.PixelCopy
+import android.view.TextureView
 import android.view.View
+import androidx.camera.view.PreviewView
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
@@ -27,15 +26,14 @@ class CrosshairView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    // Основная кисть прицела (чистая линия без контура)
+    // Основная кисть прицела (чистая одинарная линия)
     private val reticlePaint = Paint().apply {
-        strokeWidth = 4.0f // Четкая тактическая толщина линии
+        strokeWidth = 4.0f
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         isAntiAlias = true
     }
 
-    // Центральная марка (точка)
     private val dotFillPaint = Paint().apply {
         style = Paint.Style.FILL
         isAntiAlias = true
@@ -48,39 +46,37 @@ class CrosshairView @JvmOverloads constructor(
     var thermalRect = RectF()
     var opticalRect = RectF()
 
+    // Ссылка на view камеры для прямого захвата кадра
+    var phoneCameraView: PreviewView? = null
+
     // Геометрические параметры сетки
     private val reticleLength = 75f
     private val centerGap = 16f
     private val ringRadius = 52f
     private val tickLength = 10f
 
-    // Размер зоны локального анализа
+    // Зона анализа (160x160 пикселей)
     private val patchSize = 160
     private val patchHalf = patchSize / 2
 
-    // Буферы для анализа фона
-    private val sampleBitmapThermal = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
-    private val reticleBitmapThermal = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
-
-    private val sampleBitmapOptical = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
     private val reticleBitmapOptical = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
-
-    // Шейдеры зональной черно-белой инверсии
-    private var shaderThermal: BitmapShader? = null
-    private val matrixThermal = Matrix()
+    private val reticleBitmapThermal = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
 
     private var shaderOptical: BitmapShader? = null
     private val matrixOptical = Matrix()
 
+    private var shaderThermal: BitmapShader? = null
+    private val matrixThermal = Matrix()
+
     private val sampleHandler = Handler(Looper.getMainLooper())
     private var isSamplingActive = false
 
-    // Частота зонального анализа (~15 кадров/сек)
+    // Анализ фона 12 раз в секунду
     private val sampleRunnable = object : Runnable {
         override fun run() {
-            sampleBackground()
+            sampleOpticalCamera()
             if (isSamplingActive) {
-                sampleHandler.postDelayed(this, 70)
+                sampleHandler.postDelayed(this, 80)
             }
         }
     }
@@ -97,110 +93,84 @@ class CrosshairView @JvmOverloads constructor(
         sampleHandler.removeCallbacks(sampleRunnable)
     }
 
-    private fun sampleBackground() {
-        val activity = context as? Activity ?: return
-        val window = activity.window ?: return
-        if (width <= 0 || height <= 0) return
-
-        // 1. Зональный анализ тепловизора
-        if (thermalRect.width() > 0 && thermalRect.height() > 0) {
-            val cx = thermalRect.centerX()
-            val cy = thermalRect.centerY()
-            probeAndBuildShader(window, cx, cy, sampleBitmapThermal, reticleBitmapThermal) {
-                shaderThermal = BitmapShader(reticleBitmapThermal, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                matrixThermal.setTranslate(cx - patchHalf, cy - patchHalf)
-                shaderThermal?.setLocalMatrix(matrixThermal)
-                invalidate()
-            }
-        }
-
-        // 2. Зональный анализ оптической камеры
-        if (opticalRect.width() > 0 && opticalRect.height() > 0) {
-            val cx = opticalRect.centerX() + opticalOffsetX
-            val cy = opticalRect.centerY() + opticalOffsetY
-            probeAndBuildShader(window, cx, cy, sampleBitmapOptical, reticleBitmapOptical) {
-                shaderOptical = BitmapShader(reticleBitmapOptical, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                matrixOptical.setTranslate(cx - patchHalf, cy - patchHalf)
-                shaderOptical?.setLocalMatrix(matrixOptical)
-                invalidate()
-            }
-        }
-    }
-
     /**
-     * Попиксельная генерация монохромной инверсии (от ярко-белого до глубокого черного)
+     * Прямой захват физических пикселей из активного видеопотока TextureView камеры
      */
-    private fun probeAndBuildShader(
-        window: android.view.Window,
-        cx: Float,
-        cy: Float,
-        sampleBitmap: Bitmap,
-        reticleBitmap: Bitmap,
-        onReady: () -> Unit
-    ) {
-        val px = cx.roundToInt().coerceIn(patchHalf, width - patchHalf)
-        val py = cy.roundToInt().coerceIn(patchHalf, height - patchHalf)
-        val srcRect = Rect(px - patchHalf, py - patchHalf, px + patchHalf, py + patchHalf)
+    private fun sampleOpticalCamera() {
+        val pView = phoneCameraView ?: return
+        val textureView = pView.getChildAt(0) as? TextureView ?: return
+        if (textureView.width <= 0 || textureView.height <= 0) return
 
-        try {
-            PixelCopy.request(window, srcRect, sampleBitmap, { result ->
-                if (result == PixelCopy.SUCCESS) {
-                    val rawPixels = IntArray(patchSize * patchSize)
-                    sampleBitmap.getPixels(rawPixels, 0, patchSize, 0, 0, patchSize, patchSize)
-                    val outputPixels = IntArray(patchSize * patchSize)
+        // Координаты центра оптического прицела относительно TextureView
+        val cx = (opticalRect.centerX() + opticalOffsetX) - pView.x
+        val cy = (opticalRect.centerY() + opticalOffsetY) - pView.y
 
-                    val blackColor = 0xFF000000.toInt() // Насыщенный черный
-                    val whiteColor = 0xFFFFFFFF.toInt() // Ярко-белый
+        val left = (cx - patchHalf).roundToInt().coerceIn(0, textureView.width - patchSize)
+        val top = (cy - patchHalf).roundToInt().coerceIn(0, textureView.height - patchSize)
 
-                    val center = patchHalf
+        // Получаем фрагмент 160x160 прямо из видеобуфера
+        val rawPatch = textureView.getBitmap(patchSize, patchSize) ?: return
 
-                    for (y in 0 until patchSize) {
-                        for (x in 0 until patchSize) {
-                            // Фильтр от самосчитывания линии
-                            var sx = x
-                            var sy = y
-                            if (abs(x - center) <= 3) sx = (x + 5).coerceAtMost(patchSize - 1)
-                            if (abs(y - center) <= 3) sy = (y + 5).coerceAtMost(patchSize - 1)
+        val rawPixels = IntArray(patchSize * patchSize)
+        rawPatch.getPixels(rawPixels, 0, patchSize, 0, 0, patchSize, patchSize)
+        val outputPixels = IntArray(patchSize * patchSize)
 
-                            val dx = sx - center
-                            val dy = sy - center
-                            val dist = hypot(dx.toDouble(), dy.toDouble()).toFloat()
-                            if (abs(dist - ringRadius) <= 3.5f && dist > 0f) {
-                                val factor = (dist + 5f) / dist
-                                sx = (center + dx * factor).roundToInt().coerceIn(0, patchSize - 1)
-                                sy = (center + dy * factor).roundToInt().coerceIn(0, patchSize - 1)
-                            }
+        val blackColor = 0xFF000000.toInt()
+        val whiteColor = 0xFFFFFFFF.toInt()
+        val center = patchHalf
 
-                            val p = rawPixels[sy * patchSize + sx]
-                            val r = (p shr 16) and 0xFF
-                            val g = (p shr 8) and 0xFF
-                            val b = p and 0xFF
-                            val luma = (r * 77 + g * 150 + b * 29) shr 8
+        for (y in 0 until patchSize) {
+            for (x in 0 until patchSize) {
+                // Фильтр защиты от самосчитывания линии
+                var sx = x
+                var sy = y
+                if (abs(x - center) <= 3) sx = (x + 5).coerceAtMost(patchSize - 1)
+                if (abs(y - center) <= 3) sy = (y + 5).coerceAtMost(patchSize - 1)
 
-                            val idx = y * patchSize + x
-                            // На светлом фоне (>128) пиксель ЧЕРНЫЙ, на темном (<=128) БЕЛЫЙ
-                            outputPixels[idx] = if (luma > 128) blackColor else whiteColor
-                        }
-                    }
-
-                    reticleBitmap.setPixels(outputPixels, 0, patchSize, 0, 0, patchSize, patchSize)
-                    post { onReady() }
+                val dx = sx - center
+                val dy = sy - center
+                val dist = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+                if (abs(dist - ringRadius) <= 3.5f && dist > 0f) {
+                    val factor = (dist + 5f) / dist
+                    sx = (center + dx * factor).roundToInt().coerceIn(0, patchSize - 1)
+                    sy = (center + dy * factor).roundToInt().coerceIn(0, patchSize - 1)
                 }
-            }, sampleHandler)
-        } catch (_: Exception) {}
+
+                val p = rawPixels[sy * patchSize + sx]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                val luma = (r * 77 + g * 150 + b * 29) shr 8
+
+                val idx = y * patchSize + x
+                // Если фон светлый (>115) -> пиксель ЧЕРНЫЙ, если темный (<=115) -> БЕЛЫЙ
+                outputPixels[idx] = if (luma > 115) blackColor else whiteColor
+            }
+        }
+
+        reticleBitmapOptical.setPixels(outputPixels, 0, patchSize, 0, 0, patchSize, patchSize)
+
+        val globalCx = opticalRect.centerX() + opticalOffsetX
+        val globalCy = opticalRect.centerY() + opticalOffsetY
+
+        shaderOptical = BitmapShader(reticleBitmapOptical, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        matrixOptical.setTranslate(globalCx - patchHalf, globalCy - patchHalf)
+        shaderOptical?.setLocalMatrix(matrixOptical)
+
+        invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // 1. Отрисовка прицела тепловизора
+        // 1. Прицел тепловизора
         if (thermalRect.width() > 0 && thermalRect.height() > 0) {
             val cx = thermalRect.centerX()
             val cy = thermalRect.centerY()
             drawZonalReticle(canvas, cx, cy, shaderThermal)
         }
 
-        // 2. Отрисовка прицела оптической камеры
+        // 2. Прицел оптической камеры (адаптивный попиксельный)
         if (opticalRect.width() > 0 && opticalRect.height() > 0) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
@@ -218,13 +188,11 @@ class CrosshairView @JvmOverloads constructor(
             reticlePaint.shader = shader
         } else {
             reticlePaint.shader = null
-            reticlePaint.color = Color.BLACK // Базовый цвет до первого кадра
+            reticlePaint.color = Color.BLACK
         }
 
-        // Отрисовка геометрии чистой одинарной линией
         drawReticleGeometry(canvas, cx, cy, reticlePaint)
 
-        // Центральная марка
         dotFillPaint.shader = reticlePaint.shader
         if (reticlePaint.shader == null) dotFillPaint.color = Color.BLACK
         canvas.drawCircle(cx, cy, 3.5f, dotFillPaint)
