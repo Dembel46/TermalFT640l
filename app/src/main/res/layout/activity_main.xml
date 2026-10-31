@@ -7,7 +7,7 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- 1. Окно тепловизора (UVC) -->
+    <!-- 1. Тепловизор (UVC) -->
     <com.serenegiant.widget.AspectRatioSurfaceView
         android:id="@+id/svUvcCamera"
         android:layout_width="0dp"
@@ -17,17 +17,18 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- 2. Окно штатной камеры телефона (CameraX) -->
+    <!-- 2. Штатная камера телефона (COMPATIBLE режим для прямого доступа к пикселям) -->
     <androidx.camera.view.PreviewView
         android:id="@+id/pvPhoneCamera"
         android:layout_width="0dp"
         android:layout_height="match_parent"
+        app:implementationMode="compatible"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toEndOf="@+id/svUvcCamera"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- 3. Слой с прицельными сетками поверх обоих экранов -->
+    <!-- 3. Слой с адаптивными прицелами -->
     <com.example.thermalcapture.CrosshairView
         android:id="@+id/crosshairOverlay"
         android:layout_width="match_parent"
@@ -37,7 +38,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Статусная строка -->
+    <!-- Статус -->
     <TextView
         android:id="@+id/tvStatus"
         android:layout_width="wrap_content"
@@ -51,7 +52,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Панель управления (полупрозрачная внизу) -->
+    <!-- Панель кнопок -->
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
