@@ -3,14 +3,12 @@ package com.example.thermalcapture
 import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
-import android.graphics.Shader
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
@@ -25,69 +23,73 @@ class CrosshairView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    // Плотность экрана для адаптации под любые разрешения смартфонов
     private val density = context.resources.displayMetrics.density
 
-    // Геометрия прицела (в аппаратно-независимых DP)
-    private val reticleLength = 70f * density
-    private val centerGap = 16f * density
-    private val ringRadius = 48f * density
-    private val tickLength = 10f * density
-    private val strokeWidthVal = 3.5f * density
+    // Геометрия прицела (Duplex / German #4)
+    private val reticleLength = 70f * density    // Полная длина луча
+    private val centerGap = 8f * density         // Зазор у центра (уменьшен)
+    private val taperStart = 24f * density       // Точка перехода (1/3 сужение, 2/3 толстая)
+    private val thickWidth = 3.6f * density      // Толщина внешних 2/3
+    private val thinWidth = 1.2f * density       // Толщина нити у центра
+    private val dotRadius = 1.4f * density       // Микро-марка в центре
 
-    // Адаптивный размер зоны сканирования под прицел
-    private val patchSize = (ringRadius * 2.4f).roundToInt().coerceIn(120, 360)
-    private val patchHalf = patchSize / 2
-
-    // Кисть прицела (чистая монолитная линия)
-    private val reticlePaint = Paint().apply {
-        strokeWidth = strokeWidthVal
-        style = Paint.Style.STROKE
+    // Кисти для рисования
+    private val thickPaint = Paint().apply {
         strokeCap = Paint.Cap.ROUND
+        style = Paint.Style.STROKE
         isAntiAlias = true
     }
 
-    private val dotFillPaint = Paint().apply {
+    private val taperPaint = Paint().apply {
         style = Paint.Style.FILL
         isAntiAlias = true
     }
+
+    private val dotPaint = Paint().apply {
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    // Трапециевидный путь для плавного сужения к центру
+    private val taperPath = Path()
 
     // Смещение юстировки (функция "ТЯНИ")
     var opticalOffsetX = 0f
     var opticalOffsetY = 0f
     var isCalibrationMode = false
 
-    // Границы окон тепловизора (CVBS) и дневной камеры
     var thermalRect = RectF()
     var opticalRect = RectF()
 
-    // Буферы без выделения памяти в цикле (предотвращает micro-stuttering)
-    private val sampleBitmapOptical = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
-    private val reticleBitmapOptical = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
-    private val sampleBitmapThermal = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
-    private val reticleBitmapThermal = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
+    // Зона считывания фона (вокруг прицела)
+    private val sampleSize = (reticleLength * 2.2f).roundToInt().coerceIn(120, 320)
+    private val sampleHalf = sampleSize / 2
 
-    // Рабочие массивы для быстрого пространственного анализа фона
-    private val rawPixels = IntArray(patchSize * patchSize)
-    private val lumaBuffer = IntArray(patchSize * patchSize)
-    private val smoothLuma = IntArray(patchSize * patchSize)
-    private val outPixels = IntArray(patchSize * patchSize)
+    private val sampleBitmapOptical = Bitmap.createBitmap(sampleSize, sampleSize, Bitmap.Config.ARGB_8888)
+    private val sampleBitmapThermal = Bitmap.createBitmap(sampleSize, sampleSize, Bitmap.Config.ARGB_8888)
+    private val rawPixels = IntArray(sampleSize * sampleSize)
 
-    private var shaderOptical: BitmapShader? = null
-    private val matrixOptical = Matrix()
+    // Сглаженные значения тонов (0 - черный, 255 - белый) для устранения дрожания и моргания
+    private var optToneCenter = 255f
+    private var optToneLeft = 255f
+    private var optToneRight = 255f
+    private var optToneTop = 255f
+    private var optToneBottom = 255f
 
-    private var shaderThermal: BitmapShader? = null
-    private val matrixThermal = Matrix()
+    private var thmToneCenter = 255f
+    private var thmToneLeft = 255f
+    private var thmToneRight = 255f
+    private var thmToneTop = 255f
+    private var thmToneBottom = 255f
 
     private val sampleHandler = Handler(Looper.getMainLooper())
     private var isSamplingActive = false
 
-    // Частота анализа (~15 раз в секунду)
     private val sampleRunnable = object : Runnable {
         override fun run() {
             sampleSurfaces()
             if (isSamplingActive) {
-                sampleHandler.postDelayed(this, 65)
+                sampleHandler.postDelayed(this, 60)
             }
         }
     }
@@ -109,98 +111,97 @@ class CrosshairView @JvmOverloads constructor(
         val window = activity.window ?: return
         if (width <= 0 || height <= 0) return
 
-        // 1. Оптическая камера: замер строго с учетом смещения "ТЯНИ"
+        // 1. Оптическая камера с учетом "ТЯНИ"
         if (opticalRect.width() > 0 && opticalRect.height() > 0) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
-            probeWindowPatch(window, cx, cy, sampleBitmapOptical, reticleBitmapOptical) { left, top ->
-                shaderOptical = BitmapShader(reticleBitmapOptical, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                matrixOptical.setTranslate(left.toFloat(), top.toFloat())
-                shaderOptical?.setLocalMatrix(matrixOptical)
+            probeTones(window, cx, cy, sampleBitmapOptical) { c, l, r, t, b ->
+                // Фильтр инерции (EMA 70/30) - плавный переход без дрожания
+                optToneCenter = optToneCenter * 0.7f + c * 0.3f
+                optToneLeft = optToneLeft * 0.7f + l * 0.3f
+                optToneRight = optToneRight * 0.7f + r * 0.3f
+                optToneTop = optToneTop * 0.7f + t * 0.3f
+                optToneBottom = optToneBottom * 0.7f + b * 0.3f
                 invalidate()
             }
         }
 
-        // 2. Тепловизор: CVBS аналоговый сигнал в границах кадра
+        // 2. Тепловизор (CVBS поток)
         if (thermalRect.width() > 0 && thermalRect.height() > 0) {
             val cx = thermalRect.centerX()
             val cy = thermalRect.centerY()
-            probeWindowPatch(window, cx, cy, sampleBitmapThermal, reticleBitmapThermal) { left, top ->
-                shaderThermal = BitmapShader(reticleBitmapThermal, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                matrixThermal.setTranslate(left.toFloat(), top.toFloat())
-                shaderThermal?.setLocalMatrix(matrixThermal)
+            probeTones(window, cx, cy, sampleBitmapThermal) { c, l, r, t, b ->
+                thmToneCenter = thmToneCenter * 0.7f + c * 0.3f
+                thmToneLeft = thmToneLeft * 0.7f + l * 0.3f
+                thmToneRight = thmToneRight * 0.7f + r * 0.3f
+                thmToneTop = thmToneTop * 0.7f + t * 0.3f
+                thmToneBottom = thmToneBottom * 0.7f + b * 0.3f
                 invalidate()
             }
         }
     }
 
     /**
-     * Прецизионный замер фона под текущим положением прицела
+     * Считывание реального фона без самозахвата линий прицела
      */
-    private fun probeWindowPatch(
+    private fun probeTones(
         window: android.view.Window,
         viewCx: Float,
         viewCy: Float,
-        sampleBitmap: Bitmap,
-        outputBitmap: Bitmap,
-        onReady: (viewLeft: Int, viewTop: Int) -> Unit
+        bitmap: Bitmap,
+        onReady: (center: Float, left: Float, right: Float, top: Float, bottom: Float) -> Unit
     ) {
         val loc = IntArray(2)
         getLocationInWindow(loc)
 
-        // Текущие абсолютные координаты центра прицела на экране
         val winCx = loc[0] + viewCx.roundToInt()
         val winCy = loc[1] + viewCy.roundToInt()
 
         val decorView = window.decorView
-        val winW = decorView.width.coerceAtLeast(patchSize)
-        val winH = decorView.height.coerceAtLeast(patchSize)
+        val winW = decorView.width.coerceAtLeast(sampleSize)
+        val winH = decorView.height.coerceAtLeast(sampleSize)
 
-        // Зона измерений строго под перекрестием
-        val winLeft = (winCx - patchHalf).coerceIn(0, winW - patchSize)
-        val winTop = (winCy - patchHalf).coerceIn(0, winH - patchSize)
-        val srcRect = Rect(winLeft, winTop, winLeft + patchSize, winTop + patchSize)
+        val winLeft = (winCx - sampleHalf).coerceIn(0, winW - sampleSize)
+        val winTop = (winCy - sampleHalf).coerceIn(0, winH - sampleSize)
+        val srcRect = Rect(winLeft, winTop, winLeft + sampleSize, winTop + sampleSize)
 
         try {
-            PixelCopy.request(window, srcRect, sampleBitmap, { result ->
+            PixelCopy.request(window, srcRect, bitmap, { result ->
                 if (result == PixelCopy.SUCCESS) {
-                    sampleBitmap.getPixels(rawPixels, 0, patchSize, 0, 0, patchSize, patchSize)
+                    bitmap.getPixels(rawPixels, 0, sampleSize, 0, 0, sampleSize, sampleSize)
 
-                    // 1. Расчет первичной яркости каждого пикселя фона
-                    for (i in 0 until patchSize * patchSize) {
-                        val p = rawPixels[i]
+                    val mid = sampleHalf
+                    val probeDist = (reticleLength * 0.55f).roundToInt().coerceIn(15, sampleHalf - 10)
+                    val offset = (8f * density).roundToInt() // Отступ вбок от линии во избежание самосчитывания
+
+                    fun getLuma(x: Int, y: Int): Float {
+                        val px = x.coerceIn(0, sampleSize - 1)
+                        val py = y.coerceIn(0, sampleSize - 1)
+                        val p = rawPixels[py * sampleSize + px]
                         val r = (p shr 16) and 0xFF
                         val g = (p shr 8) and 0xFF
                         val b = p and 0xFF
-                        lumaBuffer[i] = (r * 77 + g * 150 + b * 29) shr 8
+                        return 0.299f * r + 0.587f * g + 0.114f * b
                     }
 
-                    // 2. Пространственный 3x3 фильтр с подавлением шума и линий
-                    val black = 0xFF000000.toInt()
-                    val white = 0xFFFFFFFF.toInt()
+                    // Замер центра (вокруг микро-точки)
+                    val cLuma = (getLuma(mid - offset, mid) + getLuma(mid + offset, mid) +
+                                 getLuma(mid, mid - offset) + getLuma(mid, mid + offset)) / 4f
 
-                    for (y in 0 until patchSize) {
-                        val row = y * patchSize
-                        for (x in 0 until patchSize) {
-                            if (x > 0 && x < patchSize - 1 && y > 0 && y < patchSize - 1) {
-                                val sum = lumaBuffer[row - patchSize + x - 1] + lumaBuffer[row - patchSize + x] + lumaBuffer[row - patchSize + x + 1] +
-                                          lumaBuffer[row + x - 1]             + (lumaBuffer[row + x] shl 1)     + lumaBuffer[row + x + 1] +
-                                          lumaBuffer[row + patchSize + x - 1] + lumaBuffer[row + patchSize + x] + lumaBuffer[row + patchSize + x + 1]
-                                smoothLuma[row + x] = sum / 10
-                            } else {
-                                smoothLuma[row + x] = lumaBuffer[row + x]
-                            }
+                    // Замер лучей: среднее по бокам от луча (строго чистый фон)
+                    val lLuma = (getLuma(mid - probeDist, mid - offset) + getLuma(mid - probeDist, mid + offset)) / 2f
+                    val rLuma = (getLuma(mid + probeDist, mid - offset) + getLuma(mid + probeDist, mid + offset)) / 2f
+                    val tLuma = (getLuma(mid - offset, mid - probeDist) + getLuma(mid + offset, mid - probeDist)) / 2f
+                    val bLuma = (getLuma(mid - offset, mid + probeDist) + getLuma(mid + offset, mid + probeDist)) / 2f
 
-                            // Порог контрастности: светлый фон (>122) -> ЧЕРНЫЙ, темный (<=122) -> БЕЛЫЙ
-                            outPixels[row + x] = if (smoothLuma[row + x] > 122) black else white
-                        }
-                    }
+                    // Плавная непрерывная инверсия: 255 - Luma (через серый)
+                    val cTone = (255f - cLuma).coerceIn(0f, 255f)
+                    val lTone = (255f - lLuma).coerceIn(0f, 255f)
+                    val rTone = (255f - rLuma).coerceIn(0f, 255f)
+                    val tTone = (255f - tLuma).coerceIn(0f, 255f)
+                    val bTone = (255f - bLuma).coerceIn(0f, 255f)
 
-                    outputBitmap.setPixels(outPixels, 0, patchSize, 0, 0, patchSize, patchSize)
-
-                    val localLeft = winLeft - loc[0]
-                    val localTop = winTop - loc[1]
-                    post { onReady(localLeft, localTop) }
+                    post { onReady(cTone, lTone, rTone, tTone, bTone) }
                 }
             }, sampleHandler)
         } catch (_: Exception) {}
@@ -209,59 +210,100 @@ class CrosshairView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // 1. Тепловизор (CVBS поток)
+        // 1. Прицел тепловизора
         if (thermalRect.width() > 0 && thermalRect.height() > 0) {
             val cx = thermalRect.centerX()
             val cy = thermalRect.centerY()
-            drawZonalReticle(canvas, cx, cy, shaderThermal)
+            drawTaperedReticle(canvas, cx, cy, thmToneCenter, thmToneLeft, thmToneRight, thmToneTop, thmToneBottom)
         }
 
-        // 2. Оптическая камера (с учетом поправки "ТЯНИ")
+        // 2. Прицел оптической камеры (с учетом "ТЯНИ")
         if (opticalRect.width() > 0 && opticalRect.height() > 0) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
-            drawZonalReticle(canvas, cx, cy, shaderOptical)
+            drawTaperedReticle(canvas, cx, cy, optToneCenter, optToneLeft, optToneRight, optToneTop, optToneBottom)
         }
     }
 
-    private fun drawZonalReticle(
+    /**
+     * Отрисовка тактического прицела Duplex с сужением к центру
+     */
+    private fun drawTaperedReticle(
         canvas: Canvas,
         cx: Float,
         cy: Float,
-        shader: BitmapShader?
+        toneCenter: Float,
+        toneLeft: Float,
+        toneRight: Float,
+        toneTop: Float,
+        toneBottom: Float
     ) {
-        if (shader != null) {
-            reticlePaint.shader = shader
-        } else {
-            reticlePaint.shader = null
-            reticlePaint.color = Color.BLACK
-        }
+        val halfThick = thickWidth / 2f
+        val halfThin = thinWidth / 2f
 
-        drawReticleGeometry(canvas, cx, cy, reticlePaint)
+        // 1. Центральная микро-марка
+        val cVal = toneCenter.roundToInt().coerceIn(0, 255)
+        dotPaint.color = Color.rgb(cVal, cVal, cVal)
+        canvas.drawCircle(cx, cy, dotRadius, dotPaint)
 
-        dotFillPaint.shader = reticlePaint.shader
-        if (reticlePaint.shader == null) dotFillPaint.color = Color.BLACK
-        canvas.drawCircle(cx, cy, 3.5f * density, dotFillPaint)
-    }
+        // 2. Левый луч
+        val lVal = toneLeft.roundToInt().coerceIn(0, 255)
+        val lColor = Color.rgb(lVal, lVal, lVal)
+        thickPaint.color = lColor
+        taperPaint.color = lColor
+        thickPaint.strokeWidth = thickWidth
+        // Внешние 2/3
+        canvas.drawLine(cx - reticleLength, cy, cx - taperStart, cy, thickPaint)
+        // Внутреннее сужение 1/3 к центру
+        taperPath.reset()
+        taperPath.moveTo(cx - taperStart, cy - halfThick)
+        taperPath.lineTo(cx - centerGap, cy - halfThin)
+        taperPath.lineTo(cx - centerGap, cy + halfThin)
+        taperPath.lineTo(cx - taperStart, cy + halfThick)
+        taperPath.close()
+        canvas.drawPath(taperPath, taperPaint)
 
-    private fun drawReticleGeometry(canvas: Canvas, cx: Float, cy: Float, paint: Paint) {
-        canvas.drawCircle(cx, cy, ringRadius, paint)
+        // 3. Правый луч
+        val rVal = toneRight.roundToInt().coerceIn(0, 255)
+        val rColor = Color.rgb(rVal, rVal, rVal)
+        thickPaint.color = rColor
+        taperPaint.color = rColor
+        canvas.drawLine(cx + taperStart, cy, cx + reticleLength, cy, thickPaint)
+        taperPath.reset()
+        taperPath.moveTo(cx + taperStart, cy - halfThick)
+        taperPath.lineTo(cx + centerGap, cy - halfThin)
+        taperPath.lineTo(cx + centerGap, cy + halfThin)
+        taperPath.lineTo(cx + taperStart, cy + halfThick)
+        taperPath.close()
+        canvas.drawPath(taperPath, taperPaint)
 
-        // Горизонтальный луч (левый и правый)
-        canvas.drawLine(cx - reticleLength, cy, cx - centerGap, cy, paint)
-        canvas.drawLine(cx + centerGap, cy, cx + reticleLength, cy, paint)
+        // 4. Верхний луч
+        val tVal = toneTop.roundToInt().coerceIn(0, 255)
+        val tColor = Color.rgb(tVal, tVal, tVal)
+        thickPaint.color = tColor
+        taperPaint.color = tColor
+        canvas.drawLine(cx, cy - reticleLength, cx, cy - taperStart, thickPaint)
+        taperPath.reset()
+        taperPath.moveTo(cx - halfThick, cy - taperStart)
+        taperPath.lineTo(cx - halfThin, cy - centerGap)
+        taperPath.lineTo(cx + halfThin, cy - centerGap)
+        taperPath.lineTo(cx + halfThick, cy - taperStart)
+        taperPath.close()
+        canvas.drawPath(taperPath, taperPaint)
 
-        // Горизонтальные риски
-        canvas.drawLine(cx - ringRadius, cy - tickLength / 2, cx - ringRadius, cy + tickLength / 2, paint)
-        canvas.drawLine(cx + ringRadius, cy - tickLength / 2, cx + ringRadius, cy + tickLength / 2, paint)
-
-        // Вертикальный луч (верхний и нижний)
-        canvas.drawLine(cx, cy - reticleLength, cx, cy - centerGap, paint)
-        canvas.drawLine(cx, cy + centerGap, cx, cy + reticleLength, paint)
-
-        // Вертикальные риски
-        canvas.drawLine(cx - tickLength / 2, cy - ringRadius, cx + tickLength / 2, cy - ringRadius, paint)
-        canvas.drawLine(cx - tickLength / 2, cy + ringRadius, cx + tickLength / 2, cy + ringRadius, paint)
+        // 5. Нижний луч
+        val bVal = toneBottom.roundToInt().coerceIn(0, 255)
+        val bColor = Color.rgb(bVal, bVal, bVal)
+        thickPaint.color = bColor
+        taperPaint.color = bColor
+        canvas.drawLine(cx, cy + taperStart, cx, cy + reticleLength, thickPaint)
+        taperPath.reset()
+        taperPath.moveTo(cx - halfThick, cy + taperStart)
+        taperPath.lineTo(cx - halfThin, cy + centerGap)
+        taperPath.lineTo(cx + halfThin, cy + centerGap)
+        taperPath.lineTo(cx + halfThick, cy + taperStart)
+        taperPath.close()
+        canvas.drawPath(taperPath, taperPaint)
     }
 
     private var lastTouchX = 0f
