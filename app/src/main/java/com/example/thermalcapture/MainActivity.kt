@@ -36,7 +36,7 @@ class MainActivity : AppCompatActivity() {
 
     private var cameraHelper: ICameraHelper? = null
 
-    // Режимы экрана: 0 - Split 50/50, 1 - PiP (Тепловизор большой, Телефон малый), 2 - Только тепловизор
+    // Режимы экрана: 0 - Split 50/50, 1 - PiP, 2 - Только тепловизор
     private var displayMode = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -55,8 +55,6 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initButtons()
         checkPermissionsAndInit()
-        crosshairOverlay = findViewById(R.id.crosshairOverlay)
-        crosshairOverlay.phoneCameraView = phoneCameraView // <-- ДОБАВИТЬ ЭТУ СТРОКУ
     }
 
     private fun checkPermissionsAndInit() {
@@ -119,13 +117,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
-        // Переключение режимов: 50/50 -> PiP -> Тепловизор
         btnMode.setOnClickListener {
             displayMode = (displayMode + 1) % 3
             applyDisplayMode(displayMode)
         }
 
-        // Включение/выключение режима юстировки параллакса пальцем
         btnCalibrate.setOnClickListener {
             crosshairOverlay.isCalibrationMode = !crosshairOverlay.isCalibrationMode
             if (crosshairOverlay.isCalibrationMode) {
@@ -160,7 +156,7 @@ class MainActivity : AppCompatActivity() {
                 set.constrainWidth(R.id.pvPhoneCamera, 0)
                 set.constrainHeight(R.id.pvPhoneCamera, ConstraintSet.MATCH_CONSTRAINT)
             }
-            1 -> { // PiP (Тепловизор большой, Телефон мини-окно в правом верхнем углу)
+            1 -> { // PiP (Тепловизор большой, Телефон в углу)
                 btnMode.text = "РЕЖИМ: PiP"
                 phoneCameraView.visibility = View.VISIBLE
 
@@ -176,7 +172,7 @@ class MainActivity : AppCompatActivity() {
                 set.constrainWidth(R.id.pvPhoneCamera, 400)
                 set.constrainHeight(R.id.pvPhoneCamera, 300)
             }
-            2 -> { // Только тепловизор во весь экран
+            2 -> { // Только тепловизор
                 btnMode.text = "РЕЖИМ: ТЕПЛО"
                 phoneCameraView.visibility = View.GONE
 
@@ -191,9 +187,6 @@ class MainActivity : AppCompatActivity() {
         rootLayout.post { updateOverlayBounds() }
     }
 
-    /**
-     * Запуск штатной камеры смартфона через Jetpack CameraX
-     */
     private fun startPhoneCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
@@ -212,9 +205,6 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    /**
-     * Запуск тепловизора через USB Host UVC
-     */
     private fun initCameraHelper() {
         cameraHelper = CameraHelper().apply {
             setStateCallback(object : ICameraHelper.StateCallback {
@@ -229,7 +219,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onCameraOpen(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "FT640L: Активен (Зеленый прицел)" }
+                    runOnUiThread { tvStatus.text = "FT640L: Активен (CVBS поток)" }
                     startPreview()
                     cameraView.holder.surface?.let { surface ->
                         if (surface.isValid) {
@@ -262,4 +252,3 @@ class MainActivity : AppCompatActivity() {
         cameraHelper?.release()
     }
 }
-
