@@ -1,3 +1,4 @@
+
 package com.example.thermalcapture
 
 import android.Manifest
@@ -23,6 +24,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Держим экран всегда включенным и во весь экран
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_main)
 
@@ -56,13 +59,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initViews() {
+        // Устанавливаем базовое соотношение сторон аналогового видео (PAL 4:3 = 720x576)
         cameraView.setAspectRatio(720, 576)
 
         cameraView.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
                 cameraHelper?.addSurface(holder.surface, false)
             }
+
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+
             override fun surfaceDestroyed(holder: SurfaceHolder) {
                 cameraHelper?.removeSurface(holder.surface)
             }
@@ -73,18 +79,28 @@ class MainActivity : AppCompatActivity() {
         cameraHelper = CameraHelper().apply {
             setStateCallback(object : ICameraHelper.StateCallback {
                 override fun onAttach(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Найдено: ${device.deviceName}. Подключение..." }
+                    runOnUiThread {
+                        tvStatus.text = "Плата найдена: ${device.deviceName}. Подключение..."
+                    }
+                    // Запрашиваем доступ к найденному USB-устройству
                     selectDevice(device)
                 }
 
                 override fun onDeviceOpen(device: UsbDevice, isFirstOpen: Boolean) {
-                    runOnUiThread { tvStatus.text = "Открытие потока..." }
+                    runOnUiThread {
+                        tvStatus.text = "Устройство открыто. Запуск потока..."
+                    }
                     openCamera()
                 }
 
                 override fun onCameraOpen(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Сигнал принимается (FT640L)" }
+                    runOnUiThread {
+                        tvStatus.text = "Сигнал принимается (FT640L)"
+                    }
+                    // Запуск превью
                     startPreview()
+
+                    // Если SurfaceView уже создан, передаем его
                     cameraView.holder.surface?.let { surface ->
                         if (surface.isValid) {
                             addSurface(surface, false)
@@ -93,19 +109,27 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onCameraClose(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Камера закрыта" }
+                    runOnUiThread {
+                        tvStatus.text = "Камера закрыта"
+                    }
                 }
 
                 override fun onDeviceClose(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Устройство отключено" }
+                    runOnUiThread {
+                        tvStatus.text = "Устройство отключено"
+                    }
                 }
 
                 override fun onDetach(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Плата извлечена" }
+                    runOnUiThread {
+                        tvStatus.text = "Плата видеозахвата извлечена"
+                    }
                 }
 
-                override fun onError(device: UsbDevice, e: Exception) {
-                    runOnUiThread { tvStatus.text = "Ошибка: ${e.localizedMessage}" }
+                override fun onCancel(device: UsbDevice) {
+                    runOnUiThread {
+                        tvStatus.text = "Подключение отменено пользователем"
+                    }
                 }
             })
         }
@@ -113,6 +137,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // Обязательно освобождаем ресурсы USB при выходе
         cameraHelper?.release()
     }
 }
