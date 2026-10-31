@@ -27,23 +27,15 @@ class CrosshairView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    // Кисть для контура (обводки)
-    private val outlinePaint = Paint().apply {
-        strokeWidth = 7.5f
+    // Основная кисть прицела (чистая линия без контура)
+    private val reticlePaint = Paint().apply {
+        strokeWidth = 4.0f // Четкая тактическая толщина линии
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         isAntiAlias = true
     }
 
-    // Кисть для сердцевины лучей
-    private val corePaint = Paint().apply {
-        strokeWidth = 3.5f
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        isAntiAlias = true
-    }
-
-    // Центральная точка
+    // Центральная марка (точка)
     private val dotFillPaint = Paint().apply {
         style = Paint.Style.FILL
         isAntiAlias = true
@@ -62,26 +54,22 @@ class CrosshairView @JvmOverloads constructor(
     private val ringRadius = 52f
     private val tickLength = 10f
 
-    // Размер зоны локального анализа (160x160 пикселей)
+    // Размер зоны локального анализа
     private val patchSize = 160
     private val patchHalf = patchSize / 2
 
-    // Буферы для снятия фона и генерации зональных масок
+    // Буферы для анализа фона
     private val sampleBitmapThermal = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
-    private val coreBitmapThermal = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
-    private val outlineBitmapThermal = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
+    private val reticleBitmapThermal = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
 
     private val sampleBitmapOptical = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
-    private val coreBitmapOptical = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
-    private val outlineBitmapOptical = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
+    private val reticleBitmapOptical = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
 
-    // Шейдеры зональной инверсии
-    private var coreShaderThermal: BitmapShader? = null
-    private var outlineShaderThermal: BitmapShader? = null
+    // Шейдеры зональной черно-белой инверсии
+    private var shaderThermal: BitmapShader? = null
     private val matrixThermal = Matrix()
 
-    private var coreShaderOptical: BitmapShader? = null
-    private var outlineShaderOptical: BitmapShader? = null
+    private var shaderOptical: BitmapShader? = null
     private val matrixOptical = Matrix()
 
     private val sampleHandler = Handler(Looper.getMainLooper())
@@ -118,12 +106,10 @@ class CrosshairView @JvmOverloads constructor(
         if (thermalRect.width() > 0 && thermalRect.height() > 0) {
             val cx = thermalRect.centerX()
             val cy = thermalRect.centerY()
-            probeAndBuildShader(window, cx, cy, sampleBitmapThermal, coreBitmapThermal, outlineBitmapThermal, isThermal = true) {
-                coreShaderThermal = BitmapShader(coreBitmapThermal, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                outlineShaderThermal = BitmapShader(outlineBitmapThermal, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            probeAndBuildShader(window, cx, cy, sampleBitmapThermal, reticleBitmapThermal) {
+                shaderThermal = BitmapShader(reticleBitmapThermal, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
                 matrixThermal.setTranslate(cx - patchHalf, cy - patchHalf)
-                coreShaderThermal?.setLocalMatrix(matrixThermal)
-                outlineShaderThermal?.setLocalMatrix(matrixThermal)
+                shaderThermal?.setLocalMatrix(matrixThermal)
                 invalidate()
             }
         }
@@ -132,28 +118,24 @@ class CrosshairView @JvmOverloads constructor(
         if (opticalRect.width() > 0 && opticalRect.height() > 0) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
-            probeAndBuildShader(window, cx, cy, sampleBitmapOptical, coreBitmapOptical, outlineBitmapOptical, isThermal = false) {
-                coreShaderOptical = BitmapShader(coreBitmapOptical, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                outlineShaderOptical = BitmapShader(outlineBitmapOptical, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            probeAndBuildShader(window, cx, cy, sampleBitmapOptical, reticleBitmapOptical) {
+                shaderOptical = BitmapShader(reticleBitmapOptical, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
                 matrixOptical.setTranslate(cx - patchHalf, cy - patchHalf)
-                coreShaderOptical?.setLocalMatrix(matrixOptical)
-                outlineShaderOptical?.setLocalMatrix(matrixOptical)
+                shaderOptical?.setLocalMatrix(matrixOptical)
                 invalidate()
             }
         }
     }
 
     /**
-     * Захват кадра и попиксельный расчет зональной инверсии
+     * Попиксельная генерация монохромной инверсии (от ярко-белого до глубокого черного)
      */
     private fun probeAndBuildShader(
         window: android.view.Window,
         cx: Float,
         cy: Float,
         sampleBitmap: Bitmap,
-        coreBitmap: Bitmap,
-        outlineBitmap: Bitmap,
-        isThermal: Boolean,
+        reticleBitmap: Bitmap,
         onReady: () -> Unit
     ) {
         val px = cx.roundToInt().coerceIn(patchHalf, width - patchHalf)
@@ -165,19 +147,16 @@ class CrosshairView @JvmOverloads constructor(
                 if (result == PixelCopy.SUCCESS) {
                     val rawPixels = IntArray(patchSize * patchSize)
                     sampleBitmap.getPixels(rawPixels, 0, patchSize, 0, 0, patchSize, patchSize)
+                    val outputPixels = IntArray(patchSize * patchSize)
 
-                    val corePixels = IntArray(patchSize * patchSize)
-                    val outlinePixels = IntArray(patchSize * patchSize)
-
-                    val darkCoreColor = if (isThermal) 0xFF00FF66.toInt() else 0xFFFF3333.toInt()
-                    val brightCoreColor = 0xFF050505.toInt()
-                    val darkOutlineColor = 0xFF000000.toInt()
-                    val brightOutlineColor = 0xFFFFFFFF.toInt()
+                    val blackColor = 0xFF000000.toInt() // Насыщенный черный
+                    val whiteColor = 0xFFFFFFFF.toInt() // Ярко-белый
 
                     val center = patchHalf
 
                     for (y in 0 until patchSize) {
                         for (x in 0 until patchSize) {
+                            // Фильтр от самосчитывания линии
                             var sx = x
                             var sy = y
                             if (abs(x - center) <= 3) sx = (x + 5).coerceAtMost(patchSize - 1)
@@ -199,18 +178,12 @@ class CrosshairView @JvmOverloads constructor(
                             val luma = (r * 77 + g * 150 + b * 29) shr 8
 
                             val idx = y * patchSize + x
-                            if (luma > 130) {
-                                corePixels[idx] = brightCoreColor
-                                outlinePixels[idx] = brightOutlineColor
-                            } else {
-                                corePixels[idx] = darkCoreColor
-                                outlinePixels[idx] = darkOutlineColor
-                            }
+                            // На светлом фоне (>128) пиксель ЧЕРНЫЙ, на темном (<=128) БЕЛЫЙ
+                            outputPixels[idx] = if (luma > 128) blackColor else whiteColor
                         }
                     }
 
-                    coreBitmap.setPixels(corePixels, 0, patchSize, 0, 0, patchSize, patchSize)
-                    outlineBitmap.setPixels(outlinePixels, 0, patchSize, 0, 0, patchSize, patchSize)
+                    reticleBitmap.setPixels(outputPixels, 0, patchSize, 0, 0, patchSize, patchSize)
                     post { onReady() }
                 }
             }, sampleHandler)
@@ -220,18 +193,18 @@ class CrosshairView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // 1. Отрисовка зонального прицела тепловизора
+        // 1. Отрисовка прицела тепловизора
         if (thermalRect.width() > 0 && thermalRect.height() > 0) {
             val cx = thermalRect.centerX()
             val cy = thermalRect.centerY()
-            drawZonalReticle(canvas, cx, cy, coreShaderThermal, outlineShaderThermal, 0xFF00FF66.toInt())
+            drawZonalReticle(canvas, cx, cy, shaderThermal)
         }
 
-        // 2. Отрисовка зонального прицела оптической камеры
+        // 2. Отрисовка прицела оптической камеры
         if (opticalRect.width() > 0 && opticalRect.height() > 0) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
-            drawZonalReticle(canvas, cx, cy, coreShaderOptical, outlineShaderOptical, 0xFFFF3333.toInt())
+            drawZonalReticle(canvas, cx, cy, shaderOptical)
         }
     }
 
@@ -239,29 +212,21 @@ class CrosshairView @JvmOverloads constructor(
         canvas: Canvas,
         cx: Float,
         cy: Float,
-        coreShader: BitmapShader?,
-        outlineShader: BitmapShader?,
-        defaultCoreColor: Int
+        shader: BitmapShader?
     ) {
-        if (coreShader != null && outlineShader != null) {
-            outlinePaint.shader = outlineShader
-            corePaint.shader = coreShader
+        if (shader != null) {
+            reticlePaint.shader = shader
         } else {
-            outlinePaint.shader = null
-            outlinePaint.color = Color.BLACK
-            corePaint.shader = null
-            corePaint.color = defaultCoreColor
+            reticlePaint.shader = null
+            reticlePaint.color = Color.BLACK // Базовый цвет до первого кадра
         }
 
-        // Шаг 1: Контур
-        drawReticleGeometry(canvas, cx, cy, outlinePaint)
-        // Шаг 2: Сердцевина (зонально инвертированная)
-        drawReticleGeometry(canvas, cx, cy, corePaint)
+        // Отрисовка геометрии чистой одинарной линией
+        drawReticleGeometry(canvas, cx, cy, reticlePaint)
 
-        // Шаг 3: Центральная марка
-        canvas.drawCircle(cx, cy, 3.5f + 2f, outlinePaint)
-        dotFillPaint.shader = corePaint.shader
-        if (corePaint.shader == null) dotFillPaint.color = defaultCoreColor
+        // Центральная марка
+        dotFillPaint.shader = reticlePaint.shader
+        if (reticlePaint.shader == null) dotFillPaint.color = Color.BLACK
         canvas.drawCircle(cx, cy, 3.5f, dotFillPaint)
     }
 
