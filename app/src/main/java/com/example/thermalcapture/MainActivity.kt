@@ -49,6 +49,8 @@ class MainActivity : AppCompatActivity() {
         phoneCameraView = findViewById(R.id.pvPhoneCamera)
         crosshairOverlay = findViewById(R.id.crosshairOverlay)
         tvStatus = findViewById(R.id.tvStatus)
+        crosshairOverlay.phoneCameraView = phoneCameraView
+        crosshairOverlay.thermalCameraView = cameraView
         btnMode = findViewById(R.id.btnMode)
         btnCalibrate = findViewById(R.id.btnCalibrate)
 
