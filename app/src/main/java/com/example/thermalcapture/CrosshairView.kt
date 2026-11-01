@@ -117,13 +117,11 @@ class CrosshairView @JvmOverloads constructor(
         val textureView = pView.getChildAt(0) as? TextureView ?: return
         if (textureView.width <= 0 || textureView.height <= 0) return
 
-        // Аппаратный GPU-блиттинг прямо в готовый буфер (0 байт мусора в RAM!)
         textureView.getBitmap(opticalSampleBitmap)
 
         val cx = (opticalRect.centerX() + opticalOffsetX) - pView.x
         val cy = (opticalRect.centerY() + opticalOffsetY) - pView.y
 
-        // Нормализация координат прицела (0.0..1.0) с учетом "ТЯНИ"
         val nx = (cx / pView.width).coerceIn(0f, 1f)
         val ny = (cy / pView.height).coerceIn(0f, 1f)
 
@@ -213,7 +211,128 @@ class CrosshairView @JvmOverloads constructor(
                     thmToneBottom = thmToneBottom * 0.65f + toTone(bLuma) * 0.35f
                 }
             }, sampleHandler)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            // Игнорируем ошибки при неактивной поверхности
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+
+        // 1. Прицел тепловизора
+        if (thermalRect.width() > 0 && thermalRect.height() > 0) {
+            val cx = thermalRect.centerX()
+            val cy = thermalRect.centerY()
+            drawTaperedReticle(canvas, cx, cy, thmToneCenter, thmToneLeft, thmToneRight, thmToneTop, thmToneBottom)
+        }
+
+        // 2. Прицел оптической камеры
+        if (opticalRect.width() > 0 && opticalRect.height() > 0) {
+            val cx = opticalRect.centerX() + opticalOffsetX
+            val cy = opticalRect.centerY() + opticalOffsetY
+            drawTaperedReticle(canvas, cx, cy, optToneCenter, optToneLeft, optToneRight, optToneTop, optToneBottom)
+        }
+    }
+
+    private fun drawTaperedReticle(
+        canvas: Canvas,
+        cx: Float,
+        cy: Float,
+        toneCenter: Float,
+        toneLeft: Float,
+        toneRight: Float,
+        toneTop: Float,
+        toneBottom: Float
+    ) {
+        val halfThick = thickWidth / 2f
+        val halfThin = thinWidth / 2f
+
+        // 1. Центральная микро-марка
+        val cVal = toneCenter.roundToInt().coerceIn(0, 255)
+        dotPaint.color = Color.rgb(cVal, cVal, cVal)
+        canvas.drawCircle(cx, cy, dotRadius, dotPaint)
+
+        // 2. Левый луч
+        val lVal = toneLeft.roundToInt().coerceIn(0, 255)
+        val lColor = Color.rgb(lVal, lVal, lVal)
+        thickPaint.color = lColor
+        taperPaint.color = lColor
+        thickPaint.strokeWidth = thickWidth
+        canvas.drawLine(cx - reticleLength, cy, cx - taperStart, cy, thickPaint)
+        taperPath.reset()
+        taperPath.moveTo(cx - taperStart, cy - halfThick)
+        taperPath.lineTo(cx - centerGap, cy - halfThin)
+        taperPath.lineTo(cx - centerGap, cy + halfThin)
+        taperPath.lineTo(cx - taperStart, cy + halfThick)
+        taperPath.close()
+        canvas.drawPath(taperPath, taperPaint)
+
+        // 3. Правый луч
+        val rVal = toneRight.roundToInt().coerceIn(0, 255)
+        val rColor = Color.rgb(rVal, rVal, rVal)
+        thickPaint.color = rColor
+        taperPaint.color = rColor
+        canvas.drawLine(cx + taperStart, cy, cx + reticleLength, cy, thickPaint)
+        taperPath.reset()
+        taperPath.moveTo(cx + taperStart, cy - halfThick)
+        taperPath.lineTo(cx + centerGap, cy - halfThin)
+        taperPath.lineTo(cx + centerGap, cy + halfThin)
+        taperPath.lineTo(cx + taperStart, cy + halfThick)
+        taperPath.close()
+        canvas.drawPath(taperPath, taperPaint)
+
+        // 4. Верхний луч
+        val tVal = toneTop.roundToInt().coerceIn(0, 255)
+        val tColor = Color.rgb(tVal, tVal, tVal)
+        thickPaint.color = tColor
+        taperPaint.color = tColor
+        canvas.drawLine(cx, cy - reticleLength, cx, cy - taperStart, thickPaint)
+        taperPath.reset()
+        taperPath.moveTo(cx - halfThick, cy - taperStart)
+        taperPath.lineTo(cx - halfThin, cy - centerGap)
+        taperPath.lineTo(cx + halfThin, cy - centerGap)
+        taperPath.lineTo(cx + halfThick, cy - taperStart)
+        taperPath.close()
+        canvas.drawPath(taperPath, taperPaint)
+
+        // 5. Нижний луч
+        val bVal = toneBottom.roundToInt().coerceIn(0, 255)
+        val bColor = Color.rgb(bVal, bVal, bVal)
+        thickPaint.color = bColor
+        taperPaint.color = bColor
+        canvas.drawLine(cx, cy + taperStart, cx, cy + reticleLength, thickPaint)
+        taperPath.reset()
+        taperPath.moveTo(cx - halfThick, cy + taperStart)
+        taperPath.lineTo(cx - halfThin, cy + centerGap)
+        taperPath.lineTo(cx + halfThin, cy + centerGap)
+        taperPath.lineTo(cx + halfThick, cy + taperStart)
+        taperPath.close()
+        canvas.drawPath(taperPath, taperPaint)
+    }
+
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!isCalibrationMode) return false
+
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                lastTouchX = event.x
+                lastTouchY = event.y
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.x - lastTouchX
+                val dy = event.y - lastTouchY
+                opticalOffsetX += dx
+                opticalOffsetY += dy
+                lastTouchX = event.x
+                lastTouchY = event.y
+                invalidate()
+                return true
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+}
