@@ -27,13 +27,13 @@ class CrosshairView @JvmOverloads constructor(
 
     // Геометрия прицела (Duplex / German #4)
     private val reticleLength = 70f * density    // Полная длина луча
-    private val centerGap = 8f * density         // Зазор у центра (уменьшен)
+    private val centerGap = 7f * density         // Зазор у центральной точки
     private val taperStart = 24f * density       // Точка перехода (1/3 сужение, 2/3 толстая)
     private val thickWidth = 3.6f * density      // Толщина внешних 2/3
     private val thinWidth = 1.2f * density       // Толщина нити у центра
-    private val dotRadius = 1.4f * density       // Микро-марка в центре
+    private val dotRadius = 1.4f * density       // Точная микро-марка в центре
 
-    // Кисти для рисования
+    // Кисти для отрисовки
     private val thickPaint = Paint().apply {
         strokeCap = Paint.Cap.ROUND
         style = Paint.Style.STROKE
@@ -50,7 +50,6 @@ class CrosshairView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
-    // Трапециевидный путь для плавного сужения к центру
     private val taperPath = Path()
 
     // Смещение юстировки (функция "ТЯНИ")
@@ -61,7 +60,7 @@ class CrosshairView @JvmOverloads constructor(
     var thermalRect = RectF()
     var opticalRect = RectF()
 
-    // Зона считывания фона (вокруг прицела)
+    // Размер зоны сканирования под прицел
     private val sampleSize = (reticleLength * 2.2f).roundToInt().coerceIn(120, 320)
     private val sampleHalf = sampleSize / 2
 
@@ -69,7 +68,7 @@ class CrosshairView @JvmOverloads constructor(
     private val sampleBitmapThermal = Bitmap.createBitmap(sampleSize, sampleSize, Bitmap.Config.ARGB_8888)
     private val rawPixels = IntArray(sampleSize * sampleSize)
 
-    // Сглаженные значения тонов (0 - черный, 255 - белый) для устранения дрожания и моргания
+    // Тона лучей и марки (255 = чисто белый, 0 = глубокий черный)
     private var optToneCenter = 255f
     private var optToneLeft = 255f
     private var optToneRight = 255f
@@ -89,7 +88,7 @@ class CrosshairView @JvmOverloads constructor(
         override fun run() {
             sampleSurfaces()
             if (isSamplingActive) {
-                sampleHandler.postDelayed(this, 60)
+                sampleHandler.postDelayed(this, 50)
             }
         }
     }
@@ -111,17 +110,17 @@ class CrosshairView @JvmOverloads constructor(
         val window = activity.window ?: return
         if (width <= 0 || height <= 0) return
 
-        // 1. Оптическая камера с учетом "ТЯНИ"
+        // 1. Оптическая камера с учетом смещения "ТЯНИ"
         if (opticalRect.width() > 0 && opticalRect.height() > 0) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
-            probeTones(window, cx, cy, sampleBitmapOptical) { c, l, r, t, b ->
-                // Фильтр инерции (EMA 70/30) - плавный переход без дрожания
-                optToneCenter = optToneCenter * 0.7f + c * 0.3f
-                optToneLeft = optToneLeft * 0.7f + l * 0.3f
-                optToneRight = optToneRight * 0.7f + r * 0.3f
-                optToneTop = optToneTop * 0.7f + t * 0.3f
-                optToneBottom = optToneBottom * 0.7f + b * 0.3f
+            probeDirectOnLines(window, cx, cy, sampleBitmapOptical) { c, l, r, t, b ->
+                // Плавное экспоненциальное сглаживание: устраняет дрожание и мерцание
+                optToneCenter = optToneCenter * 0.72f + c * 0.28f
+                optToneLeft = optToneLeft * 0.72f + l * 0.28f
+                optToneRight = optToneRight * 0.72f + r * 0.28f
+                optToneTop = optToneTop * 0.72f + t * 0.28f
+                optToneBottom = optToneBottom * 0.72f + b * 0.28f
                 invalidate()
             }
         }
@@ -130,21 +129,21 @@ class CrosshairView @JvmOverloads constructor(
         if (thermalRect.width() > 0 && thermalRect.height() > 0) {
             val cx = thermalRect.centerX()
             val cy = thermalRect.centerY()
-            probeTones(window, cx, cy, sampleBitmapThermal) { c, l, r, t, b ->
-                thmToneCenter = thmToneCenter * 0.7f + c * 0.3f
-                thmToneLeft = thmToneLeft * 0.7f + l * 0.3f
-                thmToneRight = thmToneRight * 0.7f + r * 0.3f
-                thmToneTop = thmToneTop * 0.7f + t * 0.3f
-                thmToneBottom = thmToneBottom * 0.7f + b * 0.3f
+            probeDirectOnLines(window, cx, cy, sampleBitmapThermal) { c, l, r, t, b ->
+                thmToneCenter = thmToneCenter * 0.72f + c * 0.28f
+                thmToneLeft = thmToneLeft * 0.72f + l * 0.28f
+                thmToneRight = thmToneRight * 0.72f + r * 0.28f
+                thmToneTop = thmToneTop * 0.72f + t * 0.28f
+                thmToneBottom = thmToneBottom * 0.72f + b * 0.28f
                 invalidate()
             }
         }
     }
 
     /**
-     * Считывание реального фона без самозахвата линий прицела
+     * Замер пикселей фона СТРОГО под маркой и линиями (с нулевым боковым смещением)
      */
-    private fun probeTones(
+    private fun probeDirectOnLines(
         window: android.view.Window,
         viewCx: Float,
         viewCy: Float,
@@ -171,10 +170,10 @@ class CrosshairView @JvmOverloads constructor(
                     bitmap.getPixels(rawPixels, 0, sampleSize, 0, 0, sampleSize, sampleSize)
 
                     val mid = sampleHalf
-                    val probeDist = (reticleLength * 0.55f).roundToInt().coerceIn(15, sampleHalf - 10)
-                    val offset = (8f * density).roundToInt() // Отступ вбок от линии во избежание самосчитывания
+                    val thickPointDist = (reticleLength * 0.65f).roundToInt().coerceIn(15, sampleHalf - 5)
+                    val thinPointDist = (centerGap * 1.8f).roundToInt().coerceIn(5, thickPointDist - 5)
 
-                    fun getLuma(x: Int, y: Int): Float {
+                    fun getPixelLuma(x: Int, y: Int): Float {
                         val px = x.coerceIn(0, sampleSize - 1)
                         val py = y.coerceIn(0, sampleSize - 1)
                         val p = rawPixels[py * sampleSize + px]
@@ -184,17 +183,28 @@ class CrosshairView @JvmOverloads constructor(
                         return 0.299f * r + 0.587f * g + 0.114f * b
                     }
 
-                    // Замер центра (вокруг микро-точки)
-                    val cLuma = (getLuma(mid - offset, mid) + getLuma(mid + offset, mid) +
-                                 getLuma(mid, mid - offset) + getLuma(mid, mid + offset)) / 4f
+                    // 1. Замер СТРОГО ПО ЦЕНТРАЛЬНОЙ МАРКЕ (крест 3x3 в центре для фильтрации шума)
+                    val cLuma = (getPixelLuma(mid, mid) * 2f +
+                                 getPixelLuma(mid - 1, mid) + getPixelLuma(mid + 1, mid) +
+                                 getPixelLuma(mid, mid - 1) + getPixelLuma(mid, mid + 1)) / 6f
 
-                    // Замер лучей: среднее по бокам от луча (строго чистый фон)
-                    val lLuma = (getLuma(mid - probeDist, mid - offset) + getLuma(mid - probeDist, mid + offset)) / 2f
-                    val rLuma = (getLuma(mid + probeDist, mid - offset) + getLuma(mid + probeDist, mid + offset)) / 2f
-                    val tLuma = (getLuma(mid - offset, mid - probeDist) + getLuma(mid + offset, mid - probeDist)) / 2f
-                    val bLuma = (getLuma(mid - offset, mid + probeDist) + getLuma(mid + offset, mid + probeDist)) / 2f
+                    // 2. Замер СТРОГО ПО ЛЕВОМУ ЛУЧУ (горизонтальная ось Y = mid)
+                    val lLuma = (getPixelLuma(mid - thickPointDist, mid) * 0.6f +
+                                 getPixelLuma(mid - thinPointDist, mid) * 0.4f)
 
-                    // Плавная непрерывная инверсия: 255 - Luma (через серый)
+                    // 3. Замер СТРОГО ПО ПРАВОМУ ЛУЧУ (горизонтальная ось Y = mid)
+                    val rLuma = (getPixelLuma(mid + thickPointDist, mid) * 0.6f +
+                                 getPixelLuma(mid + thinPointDist, mid) * 0.4f)
+
+                    // 4. Замер СТРОГО ПО ВЕРХНЕМУ ЛУЧУ (вертикальная ось X = mid)
+                    val tLuma = (getPixelLuma(mid, mid - thickPointDist) * 0.6f +
+                                 getPixelLuma(mid, mid - thinPointDist) * 0.4f)
+
+                    // 5. Замер СТРОГО ПО НИЖНЕМУ ЛУЧУ (вертикальная ось X = mid)
+                    val bLuma = (getPixelLuma(mid, mid + thickPointDist) * 0.6f +
+                                 getPixelLuma(mid, mid + thinPointDist) * 0.4f)
+
+                    // Непрерывная инверсия тона: 255 - Luma (от белого к черному через градиенты серого)
                     val cTone = (255f - cLuma).coerceIn(0f, 255f)
                     val lTone = (255f - lLuma).coerceIn(0f, 255f)
                     val rTone = (255f - rLuma).coerceIn(0f, 255f)
@@ -217,7 +227,7 @@ class CrosshairView @JvmOverloads constructor(
             drawTaperedReticle(canvas, cx, cy, thmToneCenter, thmToneLeft, thmToneRight, thmToneTop, thmToneBottom)
         }
 
-        // 2. Прицел оптической камеры (с учетом "ТЯНИ")
+        // 2. Прицел оптической камеры (с учетом функции "ТЯНИ")
         if (opticalRect.width() > 0 && opticalRect.height() > 0) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
@@ -226,7 +236,7 @@ class CrosshairView @JvmOverloads constructor(
     }
 
     /**
-     * Отрисовка тактического прицела Duplex с сужением к центру
+     * Отрисовка тактической сетки Duplex с плавным тоном и сужением к центру
      */
     private fun drawTaperedReticle(
         canvas: Canvas,
