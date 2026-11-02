@@ -64,22 +64,34 @@ class CrosshairView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
-    private val boxMovingPaint = Paint().apply {
-        color = Color.RED
+    // Кисти классификации целей
+    private val targetPaint = Paint().apply {
         style = Paint.Style.STROKE
-        strokeWidth = 2.5f * density
         isAntiAlias = true
     }
 
-    private val textPaint = Paint().apply {
+    // Цвета: Движение - Красный, Человек/Техника - Бледно-желтый, Иные - Бледно-зеленый
+    private val colorMoving = Color.RED
+    private val colorHumanVehicle = Color.parseColor("#FFE082") // Бледно-желтый
+    private val colorOther = Color.parseColor("#A5D6A7")        // Бледно-зеленый
+
+    // Кисти для режима "ЮСТИРОВКА"
+    private val justCornersPaint = Paint().apply {
+        color = Color.RED
+        style = Paint.Style.STROKE
+        strokeWidth = 3f * density
+        isAntiAlias = true
+    }
+
+    private val justTextPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 10f * density
+        textSize = 11f * density
         isFakeBoldText = true
         isAntiAlias = true
     }
 
-    private val textBgPaint = Paint().apply {
-        color = Color.parseColor("#99000000")
+    private val justBgPaint = Paint().apply {
+        color = Color.parseColor("#CCAA0000")
         style = Paint.Style.FILL
     }
 
@@ -242,75 +254,48 @@ class CrosshairView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // 1. Отрисовка движущихся контрастных целей
-        if (detectedTargets.isNotEmpty()) {
+        // 1. Отрисовка трекера ТОЛЬКО НА ТЕПЛОВИЗОРЕ
+        if (thermalRect.width() > 0 && thermalRect.height() > 0 && detectedTargets.isNotEmpty()) {
             for (target in detectedTargets) {
-                val primaryWindow = if (target.isThermalSource) thermalRect else opticalRect
-                val duplicateWindow = if (target.isThermalSource) opticalRect else thermalRect
+                val isLarge = target.widthPx > 9 || target.heightPx > 9
 
-                val dupOffX = if (target.isThermalSource) opticalOffsetX else -opticalOffsetX
-                val dupOffY = if (target.isThermalSource) opticalOffsetY else -opticalOffsetY
+                // Выбор цвета по классификации
+                val targetColor = when (target.type) {
+                    TargetType.MOVING -> colorMoving               // Красный
+                    TargetType.HUMAN_VEHICLE -> colorHumanVehicle  // Бледно-желтый
+                    TargetType.OTHER -> colorOther                 // Бледно-зеленый
+                }
+                targetPaint.color = targetColor
 
-                // ОБЪЕКТ БОЛЬШЕ 9x9 -> СИЛУЭТ, ИНАЧЕ -> КВАДРАТНАЯ РАМКА
-                val isLargeTarget = target.widthPx > 9 || target.heightPx > 9
-
-                val windowsToDraw = listOf(
-                    Pair(primaryWindow, 0f to 0f),
-                    Pair(duplicateWindow, dupOffX to dupOffY)
-                )
-
-                for ((win, offset) in windowsToDraw) {
-                    if (win.width() > 0 && win.height() > 0) {
-                        val (ox, oy) = offset
-
-                        if (isLargeTarget && target.silhouettePoints.isNotEmpty()) {
-                            // 1. КОНТУР ПО СИЛУЭТУ для объектов больше 9x9
-                            val path = Path()
-                            var first = true
-                            for (pt in target.silhouettePoints) {
-                                val px = win.left + pt.x * win.width() + ox
-                                val py = win.top + pt.y * win.height() + oy
-                                if (first) {
-                                    path.moveTo(px, py)
-                                    first = false
-                                } else {
-                                    path.lineTo(px, py)
-                                }
-                            }
-                            path.close()
-
-                            boxMovingPaint.strokeWidth = 2.5f * density
-                            canvas.drawPath(path, boxMovingPaint)
-
-                            val topY = win.top + target.bounds.top * win.height() + oy
-                            val leftX = win.left + target.bounds.left * win.width() + ox
-                            val label = "ЦЕЛЬ #" + target.id
-                            val textW = textPaint.measureText(label)
-                            val textH = textPaint.textSize
-
-                            val tagRect = RectF(
-                                leftX,
-                                topY - textH - 6f * density,
-                                leftX + textW + 6f * density,
-                                topY - 2f * density
-                            )
-                            canvas.drawRect(tagRect, textBgPaint)
-                            canvas.drawText(label, leftX + 2f * density, topY - 4f * density, textPaint)
+                if (isLarge && target.silhouettePoints.isNotEmpty()) {
+                    // Силуэтный контур (> 9x9)
+                    val path = Path()
+                    var first = true
+                    for (pt in target.silhouettePoints) {
+                        val px = thermalRect.left + pt.x * thermalRect.width()
+                        val py = thermalRect.top + pt.y * thermalRect.height()
+                        if (first) {
+                            path.moveTo(px, py)
+                            first = false
                         } else {
-                            // 2. КВАДРАТНАЯ РАМКА для микро-объектов <= 9x9 пикселей
-                            val cx = win.left + target.bounds.centerX() * win.width() + ox
-                            val cy = win.top + target.bounds.centerY() * win.height() + oy
-
-                            // Безопасный расчет размера без конфликтов перегрузки max()
-                            val maxDim = target.widthPx.coerceAtLeast(target.heightPx).toFloat()
-                            val halfBox = (maxDim * density * 0.9f).coerceAtLeast(7f * density)
-                            val boxRect = RectF(cx - halfBox, cy - halfBox, cx + halfBox, cy + halfBox)
-
-                            boxMovingPaint.strokeWidth = 2f * density
-                            canvas.drawRect(boxRect, boxMovingPaint)
-                            canvas.drawCircle(cx, cy, 1.5f * density, boxMovingPaint)
+                            path.lineTo(px, py)
                         }
                     }
+                    path.close()
+                    targetPaint.strokeWidth = 2.4f * density
+                    canvas.drawPath(path, targetPaint)
+                } else {
+                    // Квадратная рамка (<= 9x9)
+                    val cx = thermalRect.left + target.bounds.centerX() * thermalRect.width()
+                    val cy = thermalRect.top + target.bounds.centerY() * thermalRect.height()
+
+                    val maxDim = target.widthPx.coerceAtLeast(target.heightPx).toFloat()
+                    val halfBox = (maxDim * density * 0.9f).coerceAtLeast(7f * density)
+                    val boxRect = RectF(cx - halfBox, cy - halfBox, cx + halfBox, cy + halfBox)
+
+                    targetPaint.strokeWidth = 2f * density
+                    canvas.drawRect(boxRect, targetPaint)
+                    canvas.drawCircle(cx, cy, 1.5f * density, targetPaint)
                 }
             }
         }
@@ -326,7 +311,38 @@ class CrosshairView @JvmOverloads constructor(
         if (opticalRect.width() > 0 && opticalRect.height() > 0) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
+
             drawFastReticle(canvas, cx, cy, if (isOpticalReady) opticalShader else null)
+
+            // РЕЖИМ "ЮСТИРОВКА": Красные уголки по периметру + плашка "ПЕРЕМЕЩАЙ"
+            if (isCalibrationMode) {
+                val boxHalf = reticleLength + 14f * density
+                val arm = 18f * density
+
+                // Уголки
+                // Верхний левый
+                canvas.drawLine(cx - boxHalf, cy - boxHalf, cx - boxHalf + arm, cy - boxHalf, justCornersPaint)
+                canvas.drawLine(cx - boxHalf, cy - boxHalf, cx - boxHalf, cy - boxHalf + arm, justCornersPaint)
+                // Верхний правый
+                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf - arm, cy - boxHalf, justCornersPaint)
+                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf, cy - boxHalf + arm, justCornersPaint)
+                // Нижний левый
+                canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf + arm, cy + boxHalf, justCornersPaint)
+                canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf, cy + boxHalf - arm, justCornersPaint)
+                // Нижний правый
+                canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf - arm, cy + boxHalf, justCornersPaint)
+                canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf, cy + boxHalf - arm, justCornersPaint)
+
+                // Надпись "ПЕРЕМЕЩАЙ" сверху
+                val text = "ПЕРЕМЕЩАЙ"
+                val tW = justTextPaint.measureText(text)
+                val tH = justTextPaint.textSize
+                val tagY = cy - boxHalf - 10f * density
+                val tagX = cx - tW / 2f
+
+                canvas.drawRect(tagX - 6f * density, tagY - tH - 4f * density, tagX + tW + 6f * density, tagY + 3f * density, justBgPaint)
+                canvas.drawText(text, tagX, tagY, justTextPaint)
+            }
         }
     }
 
