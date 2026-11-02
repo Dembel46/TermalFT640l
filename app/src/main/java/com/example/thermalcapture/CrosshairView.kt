@@ -256,10 +256,14 @@ class CrosshairView @JvmOverloads constructor(
 
         // 1. Отрисовка трекера ТОЛЬКО НА ТЕПЛОВИЗОРЕ
         if (thermalRect.width() > 0 && thermalRect.height() > 0 && detectedTargets.isNotEmpty()) {
-            for (target in detectedTargets) {
-                val isLarge = target.widthPx > 9 || target.heightPx > 9
+            // Порог 9x9 пикселей относительно родной матрицы FT640L (640x512)
+            val minSensorW = 9f / 640f
+            val minSensorH = 9f / 512f
 
-                // Выбор цвета по классификации
+            for (target in detectedTargets) {
+                // ОБЪЕКТ БОЛЬШЕ 9x9 -> КОНТУР ПО СИЛУЭТУ, ИНАЧЕ -> КВАДРАТНАЯ РАМКА
+                val isLarge = target.bounds.width() > minSensorW || target.bounds.height() > minSensorH
+
                 val targetColor = when (target.type) {
                     TargetType.MOVING -> colorMoving               // Красный
                     TargetType.HUMAN_VEHICLE -> colorHumanVehicle  // Бледно-желтый
@@ -268,7 +272,7 @@ class CrosshairView @JvmOverloads constructor(
                 targetPaint.color = targetColor
 
                 if (isLarge && target.silhouettePoints.isNotEmpty()) {
-                    // Силуэтный контур (> 9x9)
+                    // КОНТУР ПО СИЛУЭТУ (> 9x9)
                     val path = Path()
                     var first = true
                     for (pt in target.silhouettePoints) {
@@ -285,12 +289,11 @@ class CrosshairView @JvmOverloads constructor(
                     targetPaint.strokeWidth = 2.4f * density
                     canvas.drawPath(path, targetPaint)
                 } else {
-                    // Квадратная рамка (<= 9x9)
+                    // КВАДРАТНАЯ РАМКА (<= 9x9)
                     val cx = thermalRect.left + target.bounds.centerX() * thermalRect.width()
                     val cy = thermalRect.top + target.bounds.centerY() * thermalRect.height()
 
-                    val maxDim = target.widthPx.coerceAtLeast(target.heightPx).toFloat()
-                    val halfBox = (maxDim * density * 0.9f).coerceAtLeast(7f * density)
+                    val halfBox = 7.5f * density
                     val boxRect = RectF(cx - halfBox, cy - halfBox, cx + halfBox, cy + halfBox)
 
                     targetPaint.strokeWidth = 2f * density
@@ -325,7 +328,7 @@ class CrosshairView @JvmOverloads constructor(
                 canvas.drawLine(cx - boxHalf, cy - boxHalf, cx - boxHalf, cy - boxHalf + arm, justCornersPaint)
                 // Верхний правый
                 canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf - arm, cy - boxHalf, justCornersPaint)
-                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf, cy - boxHalf + arm, justCornersPaint)
+                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf - arm, cy - boxHalf, justCornersPaint)
                 // Нижний левый
                 canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf + arm, cy + boxHalf, justCornersPaint)
                 canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf, cy + boxHalf - arm, justCornersPaint)
