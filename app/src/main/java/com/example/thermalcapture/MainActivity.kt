@@ -103,12 +103,14 @@ class MainActivity : AppCompatActivity() {
 
         alertManager = AlertManager(this)
 
+        cameraView.setAspectRatio(4, 3)
+
         initVisionPipeline()
         initViews()
         initButtons()
         checkPermissionsAndInit()
 
-        // Старт строго в режиме 70/30
+        // Старт в режиме 70/30
         rootLayout.post {
             setSplitRatio(0.7f, 0.3f, "70/30")
         }
@@ -132,7 +134,7 @@ class MainActivity : AppCompatActivity() {
                             PixelCopy.request(cameraView, srcRect, thermalAnalyzeBmp, { result ->
                                 if (result == PixelCopy.SUCCESS) {
                                     val copy = thermalAnalyzeBmp.copy(Bitmap.Config.ARGB_8888, false)
-                                    dispatchFrameToVision(copy, isThermal = true)
+                                    dispatchFrameToVision(copy, true)
                                 } else {
                                     isProcessingFrame = false
                                 }
@@ -141,10 +143,10 @@ class MainActivity : AppCompatActivity() {
                             isProcessingFrame = false
                         }
                     } else {
-                        // Если тепловизор не подключен — анализируем штатную камеру
+                        // Анализируем оптику только если тепловизор не активен
                         val opticalBmp = phoneCameraView.bitmap
                         if (opticalBmp != null) {
-                            dispatchFrameToVision(opticalBmp, isThermal = false)
+                            dispatchFrameToVision(opticalBmp, false)
                         }
                     }
                 }
@@ -227,9 +229,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Точное вписывание 4:3 внутрь контейнера без наезда на соседей
-     */
     private fun adjustThermalViewBounds() {
         val containerW = thermalContainer.width
         val containerH = thermalContainer.height
@@ -341,7 +340,6 @@ class MainActivity : AppCompatActivity() {
             showResolutionDialog()
         }
 
-        // Кнопка ЮСТИРОВКА
         btnCalibrate.setOnClickListener {
             crosshairOverlay.isCalibrationMode = !crosshairOverlay.isCalibrationMode
             if (crosshairOverlay.isCalibrationMode) {
@@ -386,9 +384,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Переключение пропорций: 70/30, 100% Тепло, 100% Оптика
-     */
     private fun setSplitRatio(weightThermal: Float, weightOptical: Float, modeLabel: String) {
         val lpT = thermalContainer.layoutParams as LinearLayout.LayoutParams
         val lpO = opticalContainer.layoutParams as LinearLayout.LayoutParams
