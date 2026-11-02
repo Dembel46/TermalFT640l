@@ -1,6 +1,7 @@
 package com.example.thermalcapture
 
 import android.graphics.Bitmap
+import android.graphics.PointF
 import android.graphics.RectF
 import kotlin.math.abs
 import kotlin.math.max
@@ -8,18 +9,16 @@ import kotlin.math.min
 
 data class DetectedTarget(
     val id: Int,
-    val bounds: RectF,          // Координаты рамки 0.0..1.0
-    val maxLuma: Int,           // Яркость 0..255
-    val estimatedTemp: Float,   // Температура в °C
-    val isMoving: Boolean,      // Движение
-    val isThermalSource: Boolean // Источник: true - тепловизор, false - оптика
+    val bounds: RectF,                  // Координаты 0.0..1.0
+    val silhouettePoints: List<PointF>, // Точки силуэтного контура 0.0..1.0
+    val widthPx: Int,                   // Ширина в пикселях матрицы анализа
+    val heightPx: Int,                  // Высота в пикселях матрицы анализа
+    val contrastScore: Float,           // Контрастный вес цели
+    val isMoving: Boolean,
+    val isThermalSource: Boolean
 )
 
 class ThermalVisionEngine {
-
-    var tempSlope: Float = 0.392f
-    var tempOffset: Float = -10.0f
-    var contrastThreshold: Int = 18
 
     private val procW = 160
     private val procH = 120
@@ -31,20 +30,13 @@ class ThermalVisionEngine {
     private val candidateMask = BooleanArray(totalPixels)
     private val visited = BooleanArray(totalPixels)
 
+    // Буферы для быстрого построения силуэта по строкам
+    private val rowMinX = IntArray(procH)
+    private val rowMaxX = IntArray(procH)
+
     private var nextTargetId = 1
     private val prevTargets = mutableListOf<DetectedTarget>()
     private var hasPrevFrame = false
-
-    fun calibrate(luma1: Int, temp1: Float, luma2: Int, temp2: Float) {
-        if (luma1 != luma2) {
-            tempSlope = (temp2 - temp1) / (luma2 - luma1)
-            tempOffset = temp1 - tempSlope * luma1
-        }
-    }
-
-    fun calculateTemp(luma: Int): Float {
-        return tempSlope * luma + tempOffset
-    }
 
     fun processFrame(frameBitmap: Bitmap, isThermal: Boolean): List<DetectedTarget> {
         val scaled = if (frameBitmap.width == procW && frameBitmap.height == procH) {
@@ -71,9 +63,8 @@ class ThermalVisionEngine {
         }
 
         val avgSceneLuma = (sumLuma / totalPixels).toInt()
-        val absoluteHotThreshold = max(135, avgSceneLuma + 35)
 
-        // 2. Морфология Top-Hat (ядро 7x7)
+        // 1. Морфологическое вычитание фона Top-Hat (ядро 7x7)
         val kRadius = 3
         val eroded = IntArray(totalPixels)
         for (y in kRadius until procH - kRadius) {
@@ -106,17 +97,15 @@ class ThermalVisionEngine {
             }
         }
 
-        // 3. Выявление кандидатов (Top-Hat ИЛИ яркие горячие пятна)
+        val minDiff = 25
         for (i in 0 until totalPixels) {
             val localDiff = currentLuma[i] - openedLuma[i]
-            val isTopHatHot = localDiff > contrastThreshold
-            val isAbsoluteHot = currentLuma[i] >= absoluteHotThreshold
-
-            candidateMask[i] = isTopHatHot || isAbsoluteHot
+            val isHighContrast = localDiff >= minDiff && currentLuma[i] > (avgSceneLuma + 15)
+            candidateMask[i] = isHighContrast
             visited[i] = false
         }
 
-        // 4. Поиск связанных областей (BFS)
+        // 2. Кластеризация контуров (BFS)
         val rawBlobs = mutableListOf<RawBlob>()
         val queueX = IntArray(2048)
         val queueY = IntArray(2048)
@@ -139,6 +128,12 @@ class ThermalVisionEngine {
                     var maxY = y
                     var maxL = currentLuma[idx]
                     var count = 0
+
+                    // Сброс границ строк для текущего объекта
+                    for (r in 0 until procH) {
+                        rowMinX[r] = procW
+                        rowMaxX[r] = -1
+                    }
 
                     fun checkAndPush(nx: Int, ny: Int) {
                         if (nx in 0 until procW && ny in 0 until procH) {
@@ -165,6 +160,10 @@ class ThermalVisionEngine {
                         if (qy < minY) minY = qy
                         if (qy > maxY) maxY = qy
 
+                        // Запоминаем крайние левые и правые точки каждой строки для силуэта
+                        if (qx < rowMinX[qy]) rowMinX[qy] = qx
+                        if (qx > rowMaxX[qy]) rowMaxX[qy] = qx
+
                         val l = currentLuma[qy * procW + qx]
                         if (l > maxL) maxL = l
 
@@ -174,65 +173,97 @@ class ThermalVisionEngine {
                         checkAndPush(qx, qy - 1)
                     }
 
+                    // Построение замкнутого силуэтного контура
+                    val silhouette = mutableListOf<PointF>()
+                    val bw = maxX - minX + 1
+                    val bh = maxY - minY + 1
+
+                    // Силуэт строим, если объект больше 9x9
+                    if (bw > 9 || bh > 9) {
+                        // Правый край сверху вниз
+                        for (ry in minY..maxY) {
+                            val rx = rowMaxX[ry]
+                            if (rx >= 0) {
+                                silhouette.add(PointF(rx.toFloat() / procW, ry.toFloat() / procH))
+                            }
+                        }
+                        // Левый край снизу вверх
+                        for (ry in maxY downTo minY) {
+                            val lx = rowMinX[ry]
+                            if (lx < procW) {
+                                silhouette.add(PointF(lx.toFloat() / procW, ry.toFloat() / procH))
+                            }
+                        }
+                    }
+
                     if (count in 3..2500) {
-                        rawBlobs.add(RawBlob(minX, minY, maxX, maxY, maxL))
+                        rawBlobs.add(RawBlob(minX, minY, maxX, maxY, maxL, silhouette))
                     }
                 }
             }
         }
 
-        // 5. Детекция движения и формирование списка целей
-        val currentTargets = mutableListOf<DetectedTarget>()
+        // 3. Анализ движения (только движущиеся цели)
+        val movingTargets = mutableListOf<DetectedTarget>()
         for (blob in rawBlobs) {
-            var motionEnergy = 0
+            var motionPixels = 0
             if (hasPrevFrame) {
                 for (by in blob.minY..blob.maxY) {
                     val r = by * procW
                     for (bx in blob.minX..blob.maxX) {
                         val d = abs(currentLuma[r + bx] - prevLuma[r + bx])
-                        if (d > 14) motionEnergy++
+                        if (d > 16) motionPixels++
                     }
                 }
             }
-            val isMoving = motionEnergy > 2
 
-            val normRect = RectF(
-                blob.minX.toFloat() / procW,
-                blob.minY.toFloat() / procH,
-                blob.maxX.toFloat() / procW,
-                blob.maxY.toFloat() / procH
-            )
+            val isMoving = motionPixels >= 2
 
-            val temp = calculateTemp(blob.maxLuma)
+            if (isMoving) {
+                val bw = blob.maxX - blob.minX + 1
+                val bh = blob.maxY - blob.minY + 1
+                val contrast = (blob.maxLuma - avgSceneLuma).toFloat()
 
-            var assignedId = nextTargetId++
-            for (prev in prevTargets) {
-                val dx = abs(prev.bounds.centerX() - normRect.centerX())
-                val dy = abs(prev.bounds.centerY() - normRect.centerY())
-                if (dx < 0.12f && dy < 0.12f) {
-                    assignedId = prev.id
-                    break
-                }
-            }
-
-            currentTargets.add(
-                DetectedTarget(
-                    id = assignedId,
-                    bounds = normRect,
-                    maxLuma = blob.maxLuma,
-                    estimatedTemp = temp,
-                    isMoving = isMoving,
-                    isThermalSource = isThermal
+                val normRect = RectF(
+                    blob.minX.toFloat() / procW,
+                    blob.minY.toFloat() / procH,
+                    blob.maxX.toFloat() / procW,
+                    blob.maxY.toFloat() / procH
                 )
-            )
+
+                var assignedId = nextTargetId++
+                for (prev in prevTargets) {
+                    val dx = abs(prev.bounds.centerX() - normRect.centerX())
+                    val dy = abs(prev.bounds.centerY() - normRect.centerY())
+                    if (dx < 0.12f && dy < 0.12f) {
+                        assignedId = prev.id
+                        break
+                    }
+                }
+
+                movingTargets.add(
+                    DetectedTarget(
+                        id = assignedId,
+                        bounds = normRect,
+                        silhouettePoints = blob.silhouettePoints,
+                        widthPx = bw,
+                        heightPx = bh,
+                        contrastScore = contrast,
+                        isMoving = true,
+                        isThermalSource = isThermal
+                    )
+                )
+            }
         }
 
         System.arraycopy(currentLuma, 0, prevLuma, 0, totalPixels)
         hasPrevFrame = true
-        prevTargets.clear()
-        prevTargets.addAll(currentTargets)
 
-        return currentTargets
+        val topTargets = movingTargets.sortedByDescending { it.contrastScore }.take(3)
+        prevTargets.clear()
+        prevTargets.addAll(topTargets)
+
+        return topTargets
     }
 
     private data class RawBlob(
@@ -240,6 +271,7 @@ class ThermalVisionEngine {
         val minY: Int,
         val maxX: Int,
         val maxY: Int,
-        val maxLuma: Int
+        val maxLuma: Int,
+        val silhouettePoints: List<PointF>
     )
 }
