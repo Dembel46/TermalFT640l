@@ -19,7 +19,8 @@ data class DetectedTarget(
     val widthPx: Int,
     val heightPx: Int,
     val contrastScore: Float,
-    val type: TargetType
+    val type: TargetType,
+    val isThermalSource: Boolean
 )
 
 class ThermalVisionEngine {
@@ -38,20 +39,22 @@ class ThermalVisionEngine {
     private val rowMaxX = IntArray(procH)
 
     private var nextTargetId = 1
-
-    // История треков для анализа траектории движения
     private val targetHistory = mutableMapOf<Int, TrackedObject>()
 
     private class TrackedObject(
         val id: Int,
+        var anchorX: Float,
+        var anchorY: Float,
+        var lastX: Float,
+        var lastY: Float,
         var smoothedBounds: RectF,
         var smoothedSilhouette: List<PointF>,
-        val centroidHistory: ArrayDeque<PointF> = ArrayDeque(),
         var motionHoldFrames: Int = 0,
+        var stationaryFrames: Int = 0,
         var holdShapeCounter: Int = 0
     )
 
-    fun processFrame(frameBitmap: Bitmap): List<DetectedTarget> {
+    fun processFrame(frameBitmap: Bitmap, isThermal: Boolean): List<DetectedTarget> {
         val scaled = if (frameBitmap.width == procW && frameBitmap.height == procH) {
             frameBitmap
         } else {
@@ -72,7 +75,7 @@ class ThermalVisionEngine {
             rawLuma[i] = (r * 77 + g * 150 + b * 29) shr 8
         }
 
-        // Фильтр 3x3 для сглаживания аналогового шума
+        // Фильтр 3x3 для сглаживания аналогового шума тепловизора
         var sumLuma = 0L
         for (y in 0 until procH) {
             val row = y * procW
@@ -125,15 +128,15 @@ class ThermalVisionEngine {
             }
         }
 
-        val minDiff = 24
+        val minDiff = 22
         for (i in 0 until totalPixels) {
             val localDiff = filteredLuma[i] - openedLuma[i]
-            val isHighContrast = localDiff >= minDiff && filteredLuma[i] > (avgSceneLuma + 14)
+            val isHighContrast = localDiff >= minDiff && filteredLuma[i] > (avgSceneLuma + 12)
             candidateMask[i] = isHighContrast
             visited[i] = false
         }
 
-        // 2. Кластеризация контуров
+        // 2. Кластеризация контуров (BFS)
         val rawBlobs = mutableListOf<RawBlob>()
         val queueX = IntArray(2048)
         val queueY = IntArray(2048)
@@ -223,7 +226,7 @@ class ThermalVisionEngine {
             }
         }
 
-        // 3. Траекторный трекинг и устойчивое удержание движения
+        // 3. Траекторный трекинг с защитой от аналогового шума и удержанием метки движения
         val finalTargets = mutableListOf<DetectedTarget>()
         val activeIds = mutableSetOf<Int>()
 
@@ -238,13 +241,14 @@ class ThermalVisionEngine {
                 blob.maxX.toFloat() / procW,
                 blob.maxY.toFloat() / procH
             )
+            val curCenterX = rawBounds.centerX()
+            val curCenterY = rawBounds.centerY()
 
             var assignedId = -1
-            var bestDist = 0.12f
+            var bestDist = 0.15f
             for ((id, hist) in targetHistory) {
-                val dx = abs(hist.smoothedBounds.centerX() - rawBounds.centerX())
-                val dy = abs(hist.smoothedBounds.centerY() - rawBounds.centerY())
-                val dist = dx + dy
+                val dist = hypot((hist.smoothedBounds.centerX() - curCenterX).toDouble(),
+                                 (hist.smoothedBounds.centerY() - curCenterY).toDouble()).toFloat()
                 if (dist < bestDist) {
                     bestDist = dist
                     assignedId = id
@@ -260,29 +264,40 @@ class ThermalVisionEngine {
             if (track == null) {
                 track = TrackedObject(
                     id = assignedId,
+                    anchorX = curCenterX,
+                    anchorY = curCenterY,
+                    lastX = curCenterX,
+                    lastY = curCenterY,
                     smoothedBounds = RectF(rawBounds),
                     smoothedSilhouette = blob.silhouettePoints
                 )
                 targetHistory[assignedId] = track
             }
 
-            // Добавляем текущий центр в историю траектории (храним до 12 кадров)
-            val curCenter = PointF(rawBounds.centerX(), rawBounds.centerY())
-            track.centroidHistory.addLast(curCenter)
-            if (track.centroidHistory.size > 12) {
-                track.centroidHistory.removeFirst()
+            // Замер смещения центра масс
+            val instDist = hypot((curCenterX - track.lastX).toDouble(), (curCenterY - track.lastY).toDouble()).toFloat()
+            val anchorDist = hypot((curCenterX - track.anchorX).toDouble(), (curCenterY - track.anchorY).toDouble()).toFloat()
+
+            track.lastX = curCenterX
+            track.lastY = curCenterY
+
+            // ДЕТЕКЦИЯ ДВИЖЕНИЯ: истинное перемещение объекта по экрану
+            if (instDist > 0.007f || anchorDist > 0.018f) {
+                track.motionHoldFrames = 30 // Удержание метки 3 секунды (30 кадров при 10 fps)
+                track.stationaryFrames = 0
+                track.anchorX = curCenterX
+                track.anchorY = curCenterY
+            } else {
+                track.stationaryFrames++
+                if (track.stationaryFrames > 8) {
+                    track.anchorX = curCenterX
+                    track.anchorY = curCenterY
+                }
             }
 
-            // ПРОВЕРКА ПЕРЕМЕЩЕНИЯ ОБЪЕКТА: замер смещения центра масс за последние кадры
-            val oldCenter = track.centroidHistory.first()
-            val netDisplacement = hypot(
-                (curCenter.x - oldCenter.x).toDouble(),
-                (curCenter.y - oldCenter.y).toDouble()
-            ).toFloat()
-
-            // Если объект сместился больше порога траектории — активируем таймер движения
-            if (track.centroidHistory.size >= 4 && netDisplacement > 0.018f) {
-                track.motionHoldFrames = 25 // УДЕРЖАНИЕ МЕТКИ: 2.5 секунды красным!
+            val isMoving = track.motionHoldFrames > 0
+            if (track.motionHoldFrames > 0) {
+                track.motionHoldFrames--
             }
 
             // Сглаживание координат рамки (EMA)
@@ -291,25 +306,15 @@ class ThermalVisionEngine {
             track.smoothedBounds.right += (rawBounds.right - track.smoothedBounds.right) * 0.35f
             track.smoothedBounds.bottom += (rawBounds.bottom - track.smoothedBounds.bottom) * 0.35f
 
-            // Сглаживание силуэта (обновление формы раз в 4 кадра, между ними — плавный сдвиг)
+            // Сглаживание силуэта
             track.holdShapeCounter++
             if (track.holdShapeCounter >= 4 || track.smoothedSilhouette.isEmpty()) {
                 track.holdShapeCounter = 0
                 track.smoothedSilhouette = blob.silhouettePoints
-            } else {
-                val dx = curCenter.x - oldCenter.x
-                val dy = curCenter.y - oldCenter.y
-                track.smoothedSilhouette = track.smoothedSilhouette.map { PointF(it.x + dx, it.y + dy) }
-            }
-
-            // Определение типа цели с учетом удержания движения
-            val isTargetMoving = track.motionHoldFrames > 0
-            if (track.motionHoldFrames > 0) {
-                track.motionHoldFrames--
             }
 
             val targetType = when {
-                isTargetMoving -> TargetType.MOVING // КРАСНЫЙ (пока идет удержание движения)
+                isMoving -> TargetType.MOVING // КРАСНЫЙ (при движении и в течение 3 сек после)
                 (bh >= bw * 1.25f && bh >= 9) || (bw >= bh * 1.3f && bw >= 11) || blob.pixelCount >= 30 ->
                     TargetType.HUMAN_VEHICLE // БЛЕДНО-ЖЕЛТЫЙ
                 else ->
@@ -324,12 +329,12 @@ class ThermalVisionEngine {
                     widthPx = bw,
                     heightPx = bh,
                     contrastScore = contrast,
-                    type = targetType
+                    type = targetType,
+                    isThermalSource = isThermal
                 )
             )
         }
 
-        // Очищаем потерянные треки
         targetHistory.keys.retainAll(activeIds)
 
         return finalTargets.sortedByDescending { it.contrastScore }.take(4)
