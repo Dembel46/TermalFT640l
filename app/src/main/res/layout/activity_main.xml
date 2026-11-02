@@ -7,29 +7,49 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- 1. Тепловизор (FT640L 640x512) -->
-    <com.serenegiant.widget.AspectRatioSurfaceView
-        android:id="@+id/svUvcCamera"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
+    <!-- Контейнер камер на LinearLayout (100% защита от вылетов при смене пропорций) -->
+    <LinearLayout
+        android:id="@+id/cameraContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="horizontal"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toStartOf="@+id/pvPhoneCamera"
-        app:layout_constraintHorizontal_weight="1"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <!-- 1. Тепловизор FT640L -->
+        <com.serenegiant.widget.AspectRatioSurfaceView
+            android:id="@+id/svUvcCamera"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1" />
+
+        <!-- 2. Штатная камера телефона -->
+        <androidx.camera.view.PreviewView
+            android:id="@+id/pvPhoneCamera"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1" />
+    </LinearLayout>
+
+    <!-- Кнопка "Во весь экран" на окне тепловизора -->
+    <Button
+        android:id="@+id/btnThermalFullscreen"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_margin="10dp"
+        android:backgroundTint="#80000000"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
+        android:padding="0dp"
+        android:text="⛶"
+        android:textColor="#00FF00"
+        android:textSize="18sp"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- 2. Штатная камера телефона -->
-    <androidx.camera.view.PreviewView
-        android:id="@+id/pvPhoneCamera"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintHorizontal_weight="1"
-        app:layout_constraintStart_toEndOf="@+id/svUvcCamera"
-        app:layout_constraintTop_toTopOf="parent" />
-
-    <!-- 3. Слой прицела и рамок машинного зрения -->
+    <!-- Слой прицела и рамок машинного зрения -->
     <com.example.thermalcapture.CrosshairView
         android:id="@+id/crosshairOverlay"
         android:layout_width="match_parent"
@@ -39,21 +59,22 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Строка статуса аналитики -->
+    <!-- Строка статуса -->
     <TextView
         android:id="@+id/tvStatus"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_margin="10dp"
+        android:layout_marginStart="58dp"
+        android:layout_marginTop="10dp"
         android:background="#99000000"
         android:padding="6dp"
-        android:text="Инициализация аналитики..."
+        android:text="Поиск движущихся целей..."
         android:textColor="#00FF00"
         android:textSize="11sp"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Нижняя тактическая панель управления -->
+    <!-- Нижняя панель управления -->
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -61,6 +82,16 @@
         android:orientation="horizontal"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
+
+        <Button
+            android:id="@+id/btnTracking"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginEnd="4dp"
+            android:backgroundTint="#008800"
+            android:text="ТРЕК: ВКЛ"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp" />
 
         <Button
             android:id="@+id/btnResolution"
@@ -89,16 +120,6 @@
             android:layout_marginEnd="4dp"
             android:backgroundTint="#444444"
             android:text="СТРОБ: ВЫКЛ"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp" />
-
-        <Button
-            android:id="@+id/btnCalibTemp"
-            android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:layout_marginEnd="4dp"
-            android:backgroundTint="#444444"
-            android:text="ТЕМП"
             android:textColor="#FFFFFF"
             android:textSize="10sp" />
 
