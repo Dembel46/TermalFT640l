@@ -8,6 +8,8 @@ import android.hardware.usb.UsbDevice
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
+import android.view.PixelCopy
 import android.view.SurfaceHolder
 import android.view.View
 import android.view.WindowManager
@@ -42,19 +44,34 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSound: Button
     private lateinit var btnFlash: Button
     private lateinit var btnCalibTemp: Button
+    private lateinit var btnRatio: Button
+    private lateinit var btnRes: Button
 
     private var cameraHelper: ICameraHelper? = null
 
-    // Аналитика и оповещения
     private val visionEngine = ThermalVisionEngine()
     private lateinit var alertManager: AlertManager
 
-    // Фоновый поток для компьютерного зрения (не тормозит экран и видео)
     private lateinit var visionThread: HandlerThread
     private lateinit var visionHandler: Handler
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var isVisionRunning = true
 
+    // 0 - Split, 1 - PiP, 2 - Только тепловизор
     private var displayMode = 0
+
+    // Пропорции экрана в режиме СПЛИТ: 0: 50/50, 1: 70/30 (тепло больше), 2: 30/70, 3: 80/20
+    private var splitRatioIndex = 0
+    private val splitRatios = arrayOf(
+        Pair(0.5f, 0.5f),
+        Pair(0.7f, 0.3f),
+        Pair(0.3f, 0.7f),
+        Pair(0.8f, 0.2f)
+    )
+    private val splitRatioLabels = arrayOf("ЭКРАН: 50/50", "ЭКРАН: 70/30", "ЭКРАН: 30/70", "ЭКРАН: 80/20")
+
+    // Буфер для захвата кадра тепловизора в машинном зрении
+    private val visionThermalBitmap = Bitmap.createBitmap(160, 128, Bitmap.Config.ARGB_8888)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,89 +88,23 @@ class MainActivity : AppCompatActivity() {
         btnSound = findViewById(R.id.btnSound)
         btnFlash = findViewById(R.id.btnFlash)
         btnCalibTemp = findViewById(R.id.btnCalibTemp)
+        btnRatio = findViewById(R.id.btnRatio)
+        btnRes = findViewById(R.id.btnRes)
 
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
         alertManager = AlertManager(this)
 
-        initVisionThread()
         initViews()
         initButtons()
+        initVisionPipeline()
         checkPermissionsAndInit()
     }
 
-    private fun initVisionThread() {
-        visionThread = HandlerThread("ThermalVisionThread").apply { start() }
-        visionHandler = Handler(visionThread.looper)
-
-        // Цикл аналитики (10 раз в секунду в фоновом потоке)
-        visionHandler.post(object : Runnable {
-            override fun run() {
-                if (!isVisionRunning) return
-
-                var frameToAnalyze: Bitmap? = null
-
-                // Если активен тепловизор — анализируем его поток, иначе берем штатную камеру
-                runOnUiThread {
-                    frameToAnalyze = phoneCameraView.bitmap
-                }
-
-                frameToAnalyze?.let { bmp ->
-                    val targets = visionEngine.processFrame(bmp)
-                    bmp.recycle()
-
-                    // Проверка движения и подача сигнала тревоги
-                    val hasMotion = targets.any { it.isMoving }
-                    if (hasMotion) {
-                        alertManager.triggerMotionAlert()
-                    }
-
-                    // Передаем цели на отрисовку в Overlay
-                    runOnUiThread {
-                        crosshairOverlay.detectedTargets = targets
-                        if (targets.isNotEmpty()) {
-                            val maxTarget = targets.maxByOrNull { it.maxLuma }
-                            tvStatus.text = String.format("Целей: %d | Пик: %s%.1f°C",
-                                targets.size,
-                                if ((maxTarget?.estimatedTemp ?: 0f) >= 0) "+" else "",
-                                maxTarget?.estimatedTemp ?: 0f
-                            )
-                        } else {
-                            tvStatus.text = "Поиск тепловых целей: АКТИВЕН"
-                        }
-                    }
-                }
-
-                visionHandler.postDelayed(this, 100)
-            }
-        })
-    }
-
-    private fun checkPermissionsAndInit() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 101)
-        } else {
-            startPhoneCamera()
-            initCameraHelper()
-        }
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 101 && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            startPhoneCamera()
-            initCameraHelper()
-        }
-    }
-
     private fun initViews() {
-        cameraView.setAspectRatio(720, 576)
+        // Устанавливаем родное разрешение сенсора FT640L: 640x512 (5:4)
+        cameraView.setAspectRatio(640, 512)
 
         cameraView.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
@@ -169,6 +120,76 @@ class MainActivity : AppCompatActivity() {
 
         phoneCameraView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             updateOverlayBounds()
+        }
+    }
+
+    /**
+     * Надежный конвейер машинного зрения: гарантированная передача кадра без null-ошибок
+     */
+    private fun initVisionPipeline() {
+        visionThread = HandlerThread("VisionWorkerThread").apply { start() }
+        visionHandler = Handler(visionThread.looper)
+
+        val visionLoop = object : Runnable {
+            override fun run() {
+                if (!isVisionRunning) return
+
+                val isThermalActive = cameraView.holder.surface?.isValid == true && cameraView.width > 0
+
+                if (isThermalActive) {
+                    // Захват кадра тепловизора через PixelCopy напрямую в фоновый поток
+                    try {
+                        PixelCopy.request(cameraView, visionThermalBitmap, { result ->
+                            if (result == PixelCopy.SUCCESS) {
+                                visionHandler.post {
+                                    val targets = visionEngine.processFrame(visionThermalBitmap)
+                                    handleVisionResults(targets, isThermal = true)
+                                }
+                            }
+                        }, visionHandler)
+                    } catch (e: Exception) {}
+                } else {
+                    // Если тепловизор не подключен — анализируем штатную камеру
+                    val bmp = phoneCameraView.bitmap
+                    if (bmp != null) {
+                        visionHandler.post {
+                            val targets = visionEngine.processFrame(bmp)
+                            bmp.recycle()
+                            handleVisionResults(targets, isThermal = false)
+                        }
+                    }
+                }
+
+                mainHandler.postDelayed(this, 100) // Анализ 10 раз в секунду
+            }
+        }
+
+        mainHandler.postDelayed(visionLoop, 800)
+    }
+
+    private fun handleVisionResults(targets: List<DetectedTarget>, isThermal: Boolean) {
+        val hasMotion = targets.any { it.isMoving }
+        if (hasMotion) {
+            runOnUiThread { alertManager.triggerMotionAlert() }
+        }
+
+        runOnUiThread {
+            crosshairOverlay.isTargetFromThermal = isThermal
+            crosshairOverlay.detectedTargets = targets
+            crosshairOverlay.invalidate()
+
+            if (targets.isNotEmpty()) {
+                val maxTarget = targets.maxByOrNull { it.maxLuma }
+                val sign = if ((maxTarget?.estimatedTemp ?: 0f) >= 0) "+" else ""
+                tvStatus.text = String.format("Целей: %d | Пик: %s%.1f°C | %s",
+                    targets.size,
+                    sign,
+                    maxTarget?.estimatedTemp ?: 0f,
+                    if (isThermal) "FT640L" else "Оптика"
+                )
+            } else {
+                tvStatus.text = if (isThermal) "FT640L (640x512): Поиск целей" else "Оптика: Поиск целей"
+            }
         }
     }
 
@@ -188,9 +209,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
+        // Режимы экрана: Сплит -> PiP -> Только тепловизор
         btnMode.setOnClickListener {
             displayMode = (displayMode + 1) % 3
             applyDisplayMode(displayMode)
+        }
+
+        // Переключение пропорций экрана в режиме СПЛИТ (50/50 -> 70/30 -> 30/70 -> 80/20)
+        btnRatio.setOnClickListener {
+            splitRatioIndex = (splitRatioIndex + 1) % splitRatios.size
+            btnRatio.text = splitRatioLabels[splitRatioIndex]
+            applySplitRatio()
+        }
+
+        // Выбор разрешения для тепловизора FT640L
+        btnRes.setOnClickListener {
+            showResolutionDialog()
         }
 
         btnCalibrate.setOnClickListener {
@@ -200,11 +234,10 @@ class MainActivity : AppCompatActivity() {
                 btnCalibrate.setBackgroundColor(0xAAFF8800.toInt())
             } else {
                 btnCalibrate.text = "ПРИЦЕЛ: ФИКС"
-                btnCalibrate.setBackgroundColor(0xFF444444.toInt())
+                btnCalibrate.setBackgroundColor(0xFF333333.toInt())
             }
         }
 
-        // Переключение звуковой тревоги
         btnSound.setOnClickListener {
             alertManager.isSoundEnabled = !alertManager.isSoundEnabled
             if (alertManager.isSoundEnabled) {
@@ -212,11 +245,10 @@ class MainActivity : AppCompatActivity() {
                 btnSound.setBackgroundColor(0xFF008800.toInt())
             } else {
                 btnSound.text = "ЗВУК: ВЫКЛ"
-                btnSound.setBackgroundColor(0xFF444444.toInt())
+                btnSound.setBackgroundColor(0xFF333333.toInt())
             }
         }
 
-        // Переключение светового стробоскопа вспышкой
         btnFlash.setOnClickListener {
             alertManager.isFlashEnabled = !alertManager.isFlashEnabled
             if (alertManager.isFlashEnabled) {
@@ -224,163 +256,4 @@ class MainActivity : AppCompatActivity() {
                 btnFlash.setBackgroundColor(0xFFFF8800.toInt())
             } else {
                 btnFlash.text = "СТРОБ: ВЫКЛ"
-                btnFlash.setBackgroundColor(0xFF444444.toInt())
-            }
-        }
-
-        // Диалог быстрой 2-точечной калибровки температуры
-        btnCalibTemp.setOnClickListener {
-            showTemperatureCalibrationDialog()
-        }
-    }
-
-    private fun showTemperatureCalibrationDialog() {
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(50, 40, 50, 10)
-        }
-
-        val etTemp1 = EditText(this).apply {
-            hint = "Темп. 1 опорной точки (°C) [напр: 0]"
-            setText("0")
-        }
-        val etTemp2 = EditText(this).apply {
-            hint = "Темп. 2 опорной точки (°C) [напр: 60]"
-            setText("60")
-        }
-
-        layout.addView(etTemp1)
-        layout.addView(etTemp2)
-
-        AlertDialog.Builder(this)
-            .setTitle("Калибровка температуры")
-            .setMessage("Наведите камеру/тепловизор на опорные объекты с известной температурой:")
-            .setView(layout)
-            .setPositiveButton("Применить") { _, _ ->
-                val t1 = etTemp1.text.toString().toFloatOrNull() ?: 0f
-                val t2 = etTemp2.text.toString().toFloatOrNull() ?: 60f
-                // Калибровка по базовым опорным точкам (Luma 30 -> t1, Luma 220 -> t2)
-                visionEngine.calibrate(30, t1, 220, t2)
-                Toast.makeText(this, "Калибровка температуры сохранена", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Отмена", null)
-            .show()
-    }
-
-    private fun applyDisplayMode(mode: Int) {
-        val set = ConstraintSet()
-        set.clone(rootLayout)
-
-        when (mode) {
-            0 -> {
-                btnMode.text = "РЕЖИМ: 50/50"
-                phoneCameraView.visibility = View.VISIBLE
-                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.END, R.id.pvPhoneCamera, ConstraintSet.START)
-                set.constrainWidth(R.id.svUvcCamera, 0)
-                set.constrainHeight(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
-
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.svUvcCamera, ConstraintSet.END)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-                set.constrainWidth(R.id.pvPhoneCamera, 0)
-                set.constrainHeight(R.id.pvPhoneCamera, ConstraintSet.MATCH_CONSTRAINT)
-            }
-            1 -> {
-                btnMode.text = "РЕЖИМ: PiP"
-                phoneCameraView.visibility = View.VISIBLE
-                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-                set.constrainWidth(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
-                set.constrainHeight(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
-
-                set.clear(R.id.pvPhoneCamera, ConstraintSet.START)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-                set.clear(R.id.pvPhoneCamera, ConstraintSet.BOTTOM)
-                set.constrainWidth(R.id.pvPhoneCamera, 400)
-                set.constrainHeight(R.id.pvPhoneCamera, 300)
-            }
-            2 -> {
-                btnMode.text = "РЕЖИМ: ТЕПЛО"
-                phoneCameraView.visibility = View.GONE
-                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-                set.constrainWidth(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
-                set.constrainHeight(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
-            }
-        }
-
-        set.applyTo(rootLayout)
-        rootLayout.post { updateOverlayBounds() }
-    }
-
-    private fun startPhoneCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-        cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(phoneCameraView.surfaceProvider)
-            }
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
-            try {
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(this, cameraSelector, preview)
-            } catch (exc: Exception) {
-                Toast.makeText(this, "Ошибка камеры: ${exc.message}", Toast.LENGTH_SHORT).show()
-            }
-        }, ContextCompat.getMainExecutor(this))
-    }
-
-    private fun initCameraHelper() {
-        cameraHelper = CameraHelper().apply {
-            setStateCallback(object : ICameraHelper.StateCallback {
-                override fun onAttach(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Подключение к плате: ${device.deviceName}..." }
-                    selectDevice(device)
-                }
-
-                override fun onDeviceOpen(device: UsbDevice, isFirstOpen: Boolean) {
-                    runOnUiThread { tvStatus.text = "Плата открыта. Запуск потока..." }
-                    openCamera()
-                }
-
-                override fun onCameraOpen(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "FT640L: Поток активен" }
-                    startPreview()
-                    cameraView.holder.surface?.let { surface ->
-                        if (surface.isValid) {
-                            addSurface(surface, false)
-                        }
-                    }
-                }
-
-                override fun onCameraClose(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Тепловизор закрыт" }
-                }
-
-                override fun onDeviceClose(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Плата отключена" }
-                }
-
-                override fun onDetach(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Плата захвата извлечена" }
-                }
-
-                override fun onCancel(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Подключение отменено" }
-                }
-            })
-        }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        isVisionRunning = false
-        visionThread.quitSafely()
-        alertManager.release()
-        cameraHelper?.release()
-    }
-}
+                btn
