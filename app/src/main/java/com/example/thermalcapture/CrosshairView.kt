@@ -200,9 +200,9 @@ class CrosshairView @JvmOverloads constructor(
 
         val srcRect = Rect(
             (surfCx - half).coerceIn(0, frame.width() - thermalCropPx),
-            (surfY - half).coerceIn(0, frame.height() - thermalCropPx),
+            (surfCy - half).coerceIn(0, frame.height() - thermalCropPx),
             (surfCx + half).coerceIn(thermalCropPx, frame.width()),
-            (surfY + half).coerceIn(thermalCropPx, frame.height())
+            (surfCy + half).coerceIn(thermalCropPx, frame.height())
         )
 
         try {
