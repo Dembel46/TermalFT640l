@@ -17,18 +17,17 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- 2. Штатная камера телефона (Performance SurfaceView для прямого аппаратного захвата) -->
+    <!-- 2. Штатная камера телефона -->
     <androidx.camera.view.PreviewView
         android:id="@+id/pvPhoneCamera"
         android:layout_width="0dp"
         android:layout_height="match_parent"
-        app:implementationMode="performance"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toEndOf="@+id/svUvcCamera"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- 3. Слой негативного прицела -->
+    <!-- 3. Слой прицела и рамок машинного зрения -->
     <com.example.thermalcapture.CrosshairView
         android:id="@+id/crosshairOverlay"
         android:layout_width="match_parent"
@@ -46,39 +45,69 @@
         android:layout_margin="12dp"
         android:background="#99000000"
         android:padding="6dp"
-        android:text="Ожидание платы захвата..."
+        android:text="Поиск тепловых целей: АКТИВЕН"
         android:textColor="#00FF00"
         android:textSize="12sp"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Панель кнопок -->
+    <!-- Тактическая панель управления (справа внизу) -->
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_margin="12dp"
+        android:layout_margin="10dp"
         android:orientation="horizontal"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
         <Button
+            android:id="@+id/btnSound"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_marginEnd="6dp"
+            android:backgroundTint="#008800"
+            android:text="ЗВУК: ВКЛ"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp" />
+
+        <Button
+            android:id="@+id/btnFlash"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_marginEnd="6dp"
+            android:backgroundTint="#444444"
+            android:text="СТРОБ: ВЫКЛ"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp" />
+
+        <Button
+            android:id="@+id/btnCalibTemp"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_marginEnd="6dp"
+            android:backgroundTint="#444444"
+            android:text="КАЛИБР. ТЕМП"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp" />
+
+        <Button
             android:id="@+id/btnCalibrate"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
+            android:layout_height="38dp"
+            android:layout_marginEnd="6dp"
             android:backgroundTint="#444444"
             android:text="ПРИЦЕЛ: ФИКС"
             android:textColor="#FFFFFF"
-            android:textSize="11sp" />
+            android:textSize="10sp" />
 
         <Button
             android:id="@+id/btnMode"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_height="38dp"
             android:backgroundTint="#444444"
             android:text="РЕЖИМ: 50/50"
             android:textColor="#FFFFFF"
-            android:textSize="11sp" />
+            android:textSize="10sp" />
     </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
