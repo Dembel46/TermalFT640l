@@ -7,31 +7,50 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Контейнер камер с аппаратным центрированием (без искажений пропорций 4:3) -->
+    <!-- Горизонтальный контейнер с изоляцией окон -->
     <LinearLayout
         android:id="@+id/cameraContainer"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:gravity="center"
+        android:baselineAligned="false"
         android:orientation="horizontal"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
-        <!-- 1. Тепловизор FT640L (4:3) -->
-        <com.serenegiant.widget.AspectRatioSurfaceView
-            android:id="@+id/svUvcCamera"
+        <!-- 1. Изолированный контейнер тепловизора (70% по умолчанию) -->
+        <FrameLayout
+            android:id="@+id/thermalContainer"
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="0.7" />
+            android:layout_weight="0.7"
+            android:background="#000000"
+            android:clipChildren="true"
+            android:clipToPadding="true">
 
-        <!-- 2. Штатная камера телефона -->
-        <androidx.camera.view.PreviewView
-            android:id="@+id/pvPhoneCamera"
+            <com.serenegiant.widget.AspectRatioSurfaceView
+                android:id="@+id/svUvcCamera"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:layout_gravity="center" />
+        </FrameLayout>
+
+        <!-- 2. Изолированный контейнер оптики (30% по умолчанию) -->
+        <FrameLayout
+            android:id="@+id/opticalContainer"
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="0.3" />
+            android:layout_weight="0.3"
+            android:background="#000000"
+            android:clipChildren="true"
+            android:clipToPadding="true">
+
+            <androidx.camera.view.PreviewView
+                android:id="@+id/pvPhoneCamera"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+        </FrameLayout>
     </LinearLayout>
 
     <!-- Кнопка "Во весь экран" на окне тепловизора -->
