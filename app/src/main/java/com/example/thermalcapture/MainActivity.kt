@@ -16,6 +16,7 @@ import android.view.SurfaceHolder
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -36,6 +37,8 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var rootLayout: ConstraintLayout
     private lateinit var cameraContainer: LinearLayout
+    private lateinit var thermalContainer: FrameLayout
+    private lateinit var opticalContainer: FrameLayout
     private lateinit var cameraView: AspectRatioSurfaceView
     private lateinit var phoneCameraView: PreviewView
     private lateinit var crosshairOverlay: CrosshairView
@@ -68,10 +71,6 @@ class MainActivity : AppCompatActivity() {
     private var displayMode = 0
     private var isThermalFullscreen = false
 
-    // Стандартное недеформированное соотношение аналогового CVBS
-    private var thermalAspectW = 4
-    private var thermalAspectH = 3
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -79,6 +78,8 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout = findViewById(R.id.rootLayout)
         cameraContainer = findViewById(R.id.cameraContainer)
+        thermalContainer = findViewById(R.id.thermalContainer)
+        opticalContainer = findViewById(R.id.opticalContainer)
         cameraView = findViewById(R.id.svUvcCamera)
         phoneCameraView = findViewById(R.id.pvPhoneCamera)
         crosshairOverlay = findViewById(R.id.crosshairOverlay)
@@ -101,23 +102,18 @@ class MainActivity : AppCompatActivity() {
 
         alertManager = AlertManager(this)
 
-        initThermalResolution(4, 3)
+        // 4:3 стандартное соотношение для исключения деформаций
+        cameraView.setAspectRatio(4, 3)
+
         initVisionPipeline()
         initViews()
         initButtons()
         checkPermissionsAndInit()
 
-        // По умолчанию 70/30
+        // Старт строго в режиме 70/30
         rootLayout.post {
             setSplitRatio(0.7f, 0.3f, "70/30")
         }
-    }
-
-    private fun initThermalResolution(w: Int, h: Int) {
-        thermalAspectW = w
-        thermalAspectH = h
-        cameraView.setAspectRatio(thermalAspectW, thermalAspectH)
-        btnResolution.text = "" + w + ":" + h
     }
 
     private fun initVisionPipeline() {
@@ -227,17 +223,40 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateOverlayBounds() {
-        val thermalRect = RectF(
-            cameraView.x, cameraView.y,
-            cameraView.x + cameraView.width, cameraView.y + cameraView.height
-        )
-        val opticalRect = RectF(
-            phoneCameraView.x, phoneCameraView.y,
-            phoneCameraView.x + phoneCameraView.width, phoneCameraView.y + phoneCameraView.height
-        )
+        if (thermalContainer.visibility == View.VISIBLE && cameraView.width > 0 && cameraView.height > 0) {
+            val locT = IntArray(2)
+            cameraView.getLocationOnScreen(locT)
+            val locR = IntArray(2)
+            rootLayout.getLocationOnScreen(locR)
 
-        crosshairOverlay.thermalRect = thermalRect
-        crosshairOverlay.opticalRect = opticalRect
+            val leftT = (locT[0] - locR[0]).toFloat()
+            val topT = (locT[1] - locR[1]).toFloat()
+
+            crosshairOverlay.thermalRect = RectF(
+                leftT, topT,
+                leftT + cameraView.width, topT + cameraView.height
+            )
+        } else {
+            crosshairOverlay.thermalRect = RectF(0f, 0f, 0f, 0f)
+        }
+
+        if (opticalContainer.visibility == View.VISIBLE && phoneCameraView.width > 0 && phoneCameraView.height > 0) {
+            val locO = IntArray(2)
+            phoneCameraView.getLocationOnScreen(locO)
+            val locR = IntArray(2)
+            rootLayout.getLocationOnScreen(locR)
+
+            val leftO = (locO[0] - locR[0]).toFloat()
+            val topO = (locO[1] - locR[1]).toFloat()
+
+            crosshairOverlay.opticalRect = RectF(
+                leftO, topO,
+                leftO + phoneCameraView.width, topO + phoneCameraView.height
+            )
+        } else {
+            crosshairOverlay.opticalRect = RectF(0f, 0f, 0f, 0f)
+        }
+
         crosshairOverlay.invalidate()
     }
 
@@ -256,7 +275,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Кнопка "Во весь экран"
         btnThermalFullscreen.setOnClickListener {
             if (!isThermalFullscreen) {
                 isThermalFullscreen = true
@@ -269,7 +287,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Переключение режимов: 70/30 -> ТЕПЛО 100% -> ОПТИКА 100%
         btnMode.setOnClickListener {
             displayMode = (displayMode + 1) % 3
             isThermalFullscreen = (displayMode == 1)
@@ -292,11 +309,11 @@ class MainActivity : AppCompatActivity() {
             if (crosshairOverlay.isCalibrationMode) {
                 btnCalibrate.text = "СОХРАНИТЬ"
                 btnCalibrate.setBackgroundColor(0xFFCC0000.toInt())
+                Toast.makeText(this, "Перемещайте оптический прицел пальцем", Toast.LENGTH_SHORT).show()
             } else {
                 btnCalibrate.text = "ЮСТИРОВКА"
                 btnCalibrate.setBackgroundColor(0xFF444444.toInt())
 
-                // Сохранение в память
                 val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
                 prefs.edit()
                     .putFloat("opticalOffsetX", crosshairOverlay.opticalOffsetX)
@@ -332,20 +349,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Переключение пропорций: 70/30, 100% Тепло, 100% Оптика
+     * Переключение пропорций через изолированные контейнеры (без наездов окон)
      */
     private fun setSplitRatio(weightThermal: Float, weightOptical: Float, modeLabel: String) {
-        val lpT = cameraView.layoutParams as LinearLayout.LayoutParams
-        val lpO = phoneCameraView.layoutParams as LinearLayout.LayoutParams
+        val lpT = thermalContainer.layoutParams as LinearLayout.LayoutParams
+        val lpO = opticalContainer.layoutParams as LinearLayout.LayoutParams
 
         lpT.weight = weightThermal
         lpO.weight = weightOptical
 
-        cameraView.visibility = if (weightThermal > 0f) View.VISIBLE else View.GONE
-        phoneCameraView.visibility = if (weightOptical > 0f) View.VISIBLE else View.GONE
+        thermalContainer.visibility = if (weightThermal > 0f) View.VISIBLE else View.GONE
+        opticalContainer.visibility = if (weightOptical > 0f) View.VISIBLE else View.GONE
 
-        cameraView.layoutParams = lpT
-        phoneCameraView.layoutParams = lpO
+        thermalContainer.layoutParams = lpT
+        opticalContainer.layoutParams = lpO
 
         btnMode.text = modeLabel
 
@@ -369,7 +386,8 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Пропорции тепловизора:")
             .setItems(resolutions) { _, which ->
                 val chosen = sizes[which]
-                initThermalResolution(chosen.first, chosen.second)
+                cameraView.setAspectRatio(chosen.first, chosen.second)
+                btnResolution.text = "" + chosen.first + ":" + chosen.second
                 Toast.makeText(this, "Установлено: " + resolutions[which], Toast.LENGTH_SHORT).show()
                 rootLayout.post { updateOverlayBounds() }
             }
