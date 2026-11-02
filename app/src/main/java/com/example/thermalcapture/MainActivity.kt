@@ -312,6 +312,32 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /**
+     * Сброс и привязка горизонтальной цепочки двух камер
+     */
+    private fun resetTwoCameraLayout(set: ConstraintSet) {
+        cameraView.visibility = View.VISIBLE
+        phoneCameraView.visibility = View.VISIBLE
+
+        set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
+        set.connect(R.id.svUvcCamera, ConstraintSet.END, R.id.pvPhoneCamera, ConstraintSet.START)
+        set.connect(R.id.svUvcCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+        set.connect(R.id.svUvcCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+
+        set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.svUvcCamera, ConstraintSet.END)
+        set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
+        set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+        set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+
+        set.constrainWidth(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
+        set.constrainHeight(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
+        set.constrainWidth(R.id.pvPhoneCamera, ConstraintSet.MATCH_CONSTRAINT)
+        set.constrainHeight(R.id.pvPhoneCamera, ConstraintSet.MATCH_CONSTRAINT)
+    }
+
+    /**
+     * Безопасное переключение пропорций через веса (без сбоев и падений)
+     */
     private fun applyDisplayMode(mode: Int) {
         val set = ConstraintSet()
         set.clone(rootLayout)
@@ -319,48 +345,33 @@ class MainActivity : AppCompatActivity() {
         when (mode) {
             0 -> { // 50 / 50
                 btnMode.text = "50/50"
-                cameraView.visibility = View.VISIBLE
-                phoneCameraView.visibility = View.VISIBLE
-                set.setGuidelinePercent(R.id.splitGuideline, 0.5f)
-
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.splitGuideline, ConstraintSet.END)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-                set.constrainWidth(R.id.pvPhoneCamera, 0)
-                set.constrainHeight(R.id.pvPhoneCamera, 0)
+                resetTwoCameraLayout(set)
+                set.setHorizontalWeight(R.id.svUvcCamera, 1.0f)
+                set.setHorizontalWeight(R.id.pvPhoneCamera, 1.0f)
             }
-            1 -> { // 70 / 30
+            1 -> { // 70 / 30 (Тепло 70%, Оптика 30%)
                 btnMode.text = "70/30"
-                cameraView.visibility = View.VISIBLE
-                phoneCameraView.visibility = View.VISIBLE
-                set.setGuidelinePercent(R.id.splitGuideline, 0.7f)
-
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.splitGuideline, ConstraintSet.END)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-                set.constrainWidth(R.id.pvPhoneCamera, 0)
-                set.constrainHeight(R.id.pvPhoneCamera, 0)
+                resetTwoCameraLayout(set)
+                set.setHorizontalWeight(R.id.svUvcCamera, 0.7f)
+                set.setHorizontalWeight(R.id.pvPhoneCamera, 0.3f)
             }
-            2 -> { // 30 / 70
+            2 -> { // 30 / 70 (Оптика 70%, Тепло 30%)
                 btnMode.text = "30/70"
-                cameraView.visibility = View.VISIBLE
-                phoneCameraView.visibility = View.VISIBLE
-                set.setGuidelinePercent(R.id.splitGuideline, 0.3f)
-
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.splitGuideline, ConstraintSet.END)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-                set.constrainWidth(R.id.pvPhoneCamera, 0)
-                set.constrainHeight(R.id.pvPhoneCamera, 0)
+                resetTwoCameraLayout(set)
+                set.setHorizontalWeight(R.id.svUvcCamera, 0.3f)
+                set.setHorizontalWeight(R.id.pvPhoneCamera, 0.7f)
             }
-            3 -> { // PiP
+            3 -> { // PiP (Тепло 100%, Оптика в углу)
                 btnMode.text = "PiP"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
-                set.setGuidelinePercent(R.id.splitGuideline, 1.0f)
+
+                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
+                set.connect(R.id.svUvcCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
+                set.connect(R.id.svUvcCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+                set.connect(R.id.svUvcCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+                set.constrainWidth(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
+                set.constrainHeight(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
 
                 set.clear(R.id.pvPhoneCamera, ConstraintSet.START)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
@@ -373,20 +384,25 @@ class MainActivity : AppCompatActivity() {
                 btnMode.text = "ТЕПЛО 100%"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.GONE
-                set.setGuidelinePercent(R.id.splitGuideline, 1.0f)
+
+                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
+                set.connect(R.id.svUvcCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
+                set.connect(R.id.svUvcCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+                set.connect(R.id.svUvcCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+                set.constrainWidth(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
+                set.constrainHeight(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
             }
             5 -> { // ОПТИКА 100%
                 btnMode.text = "ОПТИКА 100%"
                 cameraView.visibility = View.GONE
                 phoneCameraView.visibility = View.VISIBLE
-                set.setGuidelinePercent(R.id.splitGuideline, 0.0f)
 
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-                set.constrainWidth(R.id.pvPhoneCamera, 0)
-                set.constrainHeight(R.id.pvPhoneCamera, 0)
+                set.constrainWidth(R.id.pvPhoneCamera, ConstraintSet.MATCH_CONSTRAINT)
+                set.constrainHeight(R.id.pvPhoneCamera, ConstraintSet.MATCH_CONSTRAINT)
             }
         }
 
@@ -463,7 +479,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         isVisionRunning = false
         visionThread.quitSafely()
-        alertManager.release()
+     alertManager.release()
         cameraHelper?.release()
     }
 }
