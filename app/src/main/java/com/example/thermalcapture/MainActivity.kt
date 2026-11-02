@@ -130,7 +130,9 @@ class MainActivity : AppCompatActivity() {
                                     dispatchFrameToVision(copy, "Тепловизор (${thermalWidth}x${thermalHeight})")
                                 }
                             }, mainHandler)
-                        } catch (_: Exception) {}
+                        } catch (e: Exception) {
+                            // Игнорируем ошибки захвата неактивной поверхности
+                        }
                     } else {
                         // Если тепловизор не подключен — анализируем штатную камеру
                         val opticalBmp = phoneCameraView.bitmap
@@ -170,7 +172,8 @@ class MainActivity : AppCompatActivity() {
                         tvStatus.text = "Поиск целей: АКТИВЕН [$sourceName]"
                     }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                // Защита от сбоя обработки кадра
             } finally {
                 isProcessingFrame = false
             }
@@ -233,13 +236,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
-        // Переключение пропорций экранов
         btnMode.setOnClickListener {
             displayMode = (displayMode + 1) % 6
             applyDisplayMode(displayMode)
         }
 
-        // Выбор разрешения тепловизора
         btnResolution.setOnClickListener {
             showResolutionDialog()
         }
@@ -339,9 +340,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Управление пропорциями и соотношением экранов
-     */
     private fun applyDisplayMode(mode: Int) {
         val set = ConstraintSet()
         set.clone(rootLayout)
@@ -365,7 +363,7 @@ class MainActivity : AppCompatActivity() {
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
             }
-            1 -> { // 70 / 30 (Тепловизор большой 70%, Оптика 30%)
+            1 -> { // 70 / 30
                 btnMode.text = "70/30"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
@@ -378,7 +376,7 @@ class MainActivity : AppCompatActivity() {
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.svUvcCamera, ConstraintSet.END)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
             }
-            2 -> { // 30 / 70 (Оптика большая 70%, Тепловизор 30%)
+            2 -> { // 30 / 70
                 btnMode.text = "30/70"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
@@ -391,7 +389,7 @@ class MainActivity : AppCompatActivity() {
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.svUvcCamera, ConstraintSet.END)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
             }
-            3 -> { // PiP (Тепловизор 100%, Оптика в углу 350x260)
+            3 -> { // PiP
                 btnMode.text = "PiP"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
@@ -480,4 +478,22 @@ class MainActivity : AppCompatActivity() {
                     runOnUiThread { tvStatus.text = "Плата отключена" }
                 }
 
-                
+                override fun onDetach(device: UsbDevice) {
+                    runOnUiThread { tvStatus.text = "Плата захвата извлечена" }
+                }
+
+                override fun onCancel(device: UsbDevice) {
+                    runOnUiThread { tvStatus.text = "Подключение отменено" }
+                }
+            })
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        isVisionRunning = false
+        visionThread.quitSafely()
+        alertManager.release()
+        cameraHelper?.release()
+    }
+}
