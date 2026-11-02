@@ -58,13 +58,9 @@ class MainActivity : AppCompatActivity() {
     private var isVisionRunning = true
     private var isProcessingFrame = false
 
-    // Буфер для захвата кадра тепловизора на анализ
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 256, Bitmap.Config.ARGB_8888)
 
-    // Режимы экрана: 0 - 50/50, 1 - 70/30 (Тепло+), 2 - 30/70 (Оптика+), 3 - PiP, 4 - Тепло 100%, 5 - Оптика 100%
     private var displayMode = 0
-
-    // Разрешение тепловизора FT640L по умолчанию: 640x512
     private var thermalWidth = 640
     private var thermalHeight = 512
 
@@ -101,17 +97,13 @@ class MainActivity : AppCompatActivity() {
         thermalWidth = w
         thermalHeight = h
         cameraView.setAspectRatio(thermalWidth, thermalHeight)
-        btnResolution.text = "${w}x${h}"
+        btnResolution.text = "" + w + "x" + h
     }
 
-    /**
-     * Конвейер машинного зрения с гарантированной передачей кадров
-     */
     private fun initVisionPipeline() {
         visionThread = HandlerThread("VisionProcessingThread").apply { start() }
         visionHandler = Handler(visionThread.looper)
 
-        // Запуск таймера анализа на главном потоке (10 кадров/сек)
         mainHandler.post(object : Runnable {
             override fun run() {
                 if (!isVisionRunning) return
@@ -120,21 +112,18 @@ class MainActivity : AppCompatActivity() {
                     val isThermalActive = cameraView.holder.surface?.isValid == true && cameraView.width > 0
 
                     if (isThermalActive) {
-                        // Захват кадра с тепловизора CVBS
                         val frame = cameraView.holder.surfaceFrame
                         val srcRect = Rect(0, 0, frame.width(), frame.height())
                         try {
                             PixelCopy.request(cameraView, srcRect, thermalAnalyzeBmp, { result ->
                                 if (result == PixelCopy.SUCCESS) {
                                     val copy = thermalAnalyzeBmp.copy(Bitmap.Config.ARGB_8888, false)
-                                    dispatchFrameToVision(copy, "Тепловизор (${thermalWidth}x${thermalHeight})")
+                                    dispatchFrameToVision(copy, "Тепловизор")
                                 }
                             }, mainHandler)
                         } catch (e: Exception) {
-                            // Игнорируем ошибки захвата неактивной поверхности
                         }
                     } else {
-                        // Если тепловизор не подключен — анализируем штатную камеру
                         val opticalBmp = phoneCameraView.bitmap
                         if (opticalBmp != null) {
                             dispatchFrameToVision(opticalBmp, "Оптика")
@@ -165,15 +154,14 @@ class MainActivity : AppCompatActivity() {
 
                     if (targets.isNotEmpty()) {
                         val maxTarget = targets.maxByOrNull { it.maxLuma }
-                        val sign = if ((maxTarget?.estimatedTemp ?: 0f) >= 0) "+" else ""
-                        tvStatus.text = String.format("Целей: %d | Пик: %s%.1f°C | %s",
-                            targets.size, sign, maxTarget?.estimatedTemp ?: 0f, sourceName)
+                        val tempVal = maxTarget?.estimatedTemp ?: 0f
+                        val sign = if (tempVal >= 0) "+" else ""
+                        tvStatus.text = "Целей: " + targets.size + " | Пик: " + sign + String.format("%.1f", tempVal) + "C | " + sourceName
                     } else {
-                        tvStatus.text = "Поиск целей: АКТИВЕН [$sourceName]"
+                        tvStatus.text = "Поиск целей: АКТИВЕН [" + sourceName + "]"
                     }
                 }
             } catch (e: Exception) {
-                // Защита от сбоя обработки кадра
             } finally {
                 isProcessingFrame = false
             }
@@ -302,7 +290,7 @@ class MainActivity : AppCompatActivity() {
             .setItems(resolutions) { _, which ->
                 val chosen = sizes[which]
                 initThermalResolution(chosen.first, chosen.second)
-                Toast.makeText(this, "Установлено: ${resolutions[which]}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Установлено: " + resolutions[which], Toast.LENGTH_SHORT).show()
                 rootLayout.post { updateOverlayBounds() }
             }
             .show()
@@ -315,11 +303,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         val etTemp1 = EditText(this).apply {
-            hint = "Темп. холодной точки (°C) [напр: 0]"
+            hint = "Темп. холодной точки (C) [напр: 0]"
             setText("0")
         }
         val etTemp2 = EditText(this).apply {
-            hint = "Темп. горячей точки (°C) [напр: 60]"
+            hint = "Темп. горячей точки (C) [напр: 60]"
             setText("60")
         }
 
@@ -345,7 +333,7 @@ class MainActivity : AppCompatActivity() {
         set.clone(rootLayout)
 
         when (mode) {
-            0 -> { // 50 / 50
+            0 -> {
                 btnMode.text = "50/50"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
@@ -363,7 +351,7 @@ class MainActivity : AppCompatActivity() {
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
             }
-            1 -> { // 70 / 30
+            1 -> {
                 btnMode.text = "70/30"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
@@ -376,7 +364,7 @@ class MainActivity : AppCompatActivity() {
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.svUvcCamera, ConstraintSet.END)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
             }
-            2 -> { // 30 / 70
+            2 -> {
                 btnMode.text = "30/70"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
@@ -389,14 +377,14 @@ class MainActivity : AppCompatActivity() {
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.svUvcCamera, ConstraintSet.END)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
             }
-            3 -> { // PiP
+            3 -> {
                 btnMode.text = "PiP"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
 
                 set.constrainPercentWidth(R.id.svUvcCamera, 1.0f)
                 set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
+                set.connect(R.id.svUvcCamera, ConstraintSet.END, R.id.pvPhoneCamera, ConstraintSet.END)
 
                 set.clear(R.id.pvPhoneCamera, ConstraintSet.START)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
@@ -405,7 +393,7 @@ class MainActivity : AppCompatActivity() {
                 set.constrainWidth(R.id.pvPhoneCamera, 360)
                 set.constrainHeight(R.id.pvPhoneCamera, 270)
             }
-            4 -> { // ТЕПЛО 100%
+            4 -> {
                 btnMode.text = "ТЕПЛО 100%"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.GONE
@@ -414,7 +402,7 @@ class MainActivity : AppCompatActivity() {
                 set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
                 set.connect(R.id.svUvcCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
             }
-            5 -> { // ОПТИКА 100%
+            5 -> {
                 btnMode.text = "ОПТИКА 100%"
                 cameraView.visibility = View.GONE
                 phoneCameraView.visibility = View.VISIBLE
@@ -442,7 +430,7 @@ class MainActivity : AppCompatActivity() {
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(this, cameraSelector, preview)
             } catch (exc: Exception) {
-                Toast.makeText(this, "Ошибка камеры: ${exc.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Ошибка камеры: " + (exc.message ?: ""), Toast.LENGTH_SHORT).show()
             }
         }, ContextCompat.getMainExecutor(this))
     }
@@ -451,7 +439,7 @@ class MainActivity : AppCompatActivity() {
         cameraHelper = CameraHelper().apply {
             setStateCallback(object : ICameraHelper.StateCallback {
                 override fun onAttach(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Подключение к плате: ${device.deviceName}..." }
+                    runOnUiThread { tvStatus.text = "Подключение к плате: " + device.deviceName }
                     selectDevice(device)
                 }
 
@@ -461,7 +449,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onCameraOpen(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "FT640L ($thermalWidth x $thermalHeight): Поток активен" }
+                    runOnUiThread { tvStatus.text = "FT640L (" + thermalWidth + "x" + thermalHeight + "): Поток активен" }
                     startPreview()
                     cameraView.holder.surface?.let { surface ->
                         if (surface.isValid) {
@@ -479,4 +467,21 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onDetach(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Плата захвата и
+                    runOnUiThread { tvStatus.text = "Плата захвата извлечена" }
+                }
+
+                override fun onCancel(device: UsbDevice) {
+                    runOnUiThread { tvStatus.text = "Подключение отменено" }
+                }
+            })
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        isVisionRunning = false
+        visionThread.quitSafely()
+        alertManager.release()
+        cameraHelper?.release()
+    }
+}
