@@ -1,6 +1,7 @@
 package com.example.thermalcapture
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Rect
@@ -57,22 +58,15 @@ class MainActivity : AppCompatActivity() {
     private var isVisionRunning = true
     private var isProcessingFrame = false
 
-    // Тумблер режима трекинга целей
     private var isTrackingEnabled = true
-
     private var isThermalStreaming = false
-    private var forceAnalysisSource = 0 // 0 - Авто, 1 - Оптика, 2 - Тепло
 
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 256, Bitmap.Config.ARGB_8888)
 
-    // Текущие и предыдущие веса экранов
-    private var currentWeightThermal = 1.0f
-    private var currentWeightOptical = 1.0f
-    private var savedWeightThermal = 1.0f
-    private var savedWeightOptical = 1.0f
+    // Режимы экрана: 0 - 70/30 (по умолчанию), 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
+    private var displayMode = 0
     private var isThermalFullscreen = false
 
-    private var displayMode = 0
     private var thermalWidth = 640
     private var thermalHeight = 512
 
@@ -97,6 +91,11 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
+        // Загрузка сохраненных координат юстировки
+        val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
+        crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
+        crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
+
         alertManager = AlertManager(this)
 
         initThermalResolution(640, 512)
@@ -104,6 +103,11 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initButtons()
         checkPermissionsAndInit()
+
+        // По умолчанию режим 70/30
+        rootLayout.post {
+            setSplitRatio(0.7f, 0.3f, "70/30")
+        }
     }
 
     private fun initThermalResolution(w: Int, h: Int) {
@@ -122,29 +126,29 @@ class MainActivity : AppCompatActivity() {
                 if (!isVisionRunning) return
 
                 if (!isProcessingFrame && isTrackingEnabled) {
-                    val useThermal = when (forceAnalysisSource) {
-                        1 -> false
-                        2 -> true
-                        else -> isThermalStreaming
-                    }
+                    val isThermalActive = isThermalStreaming && cameraView.width > 0 && cameraView.holder.surface?.isValid == true
 
-                    if (useThermal && cameraView.width > 0 && cameraView.holder.surface?.isValid == true) {
+                    if (isThermalActive) {
                         val frame = cameraView.holder.surfaceFrame
                         val srcRect = Rect(0, 0, frame.width(), frame.height())
                         try {
                             PixelCopy.request(cameraView, srcRect, thermalAnalyzeBmp, { result ->
                                 if (result == PixelCopy.SUCCESS) {
                                     val copy = thermalAnalyzeBmp.copy(Bitmap.Config.ARGB_8888, false)
-                                    dispatchFrameToVision(copy, true, "Тепловизор")
+                                    dispatchFrameToVision(copy)
                                 } else {
-                                    analyzeOpticalFallback()
+                                    isProcessingFrame = false
                                 }
                             }, mainHandler)
                         } catch (e: Exception) {
-                            analyzeOpticalFallback()
+                            isProcessingFrame = false
                         }
                     } else {
-                        analyzeOpticalFallback()
+                        // Пока плата захвата не подключена — анализируем штатную камеру
+                        val opticalBmp = phoneCameraView.bitmap
+                        if (opticalBmp != null) {
+                            dispatchFrameToVision(opticalBmp)
+                        }
                     }
                 }
 
@@ -153,21 +157,14 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    private fun analyzeOpticalFallback() {
-        val opticalBmp = phoneCameraView.bitmap
-        if (opticalBmp != null) {
-            dispatchFrameToVision(opticalBmp, false, "Оптика")
-        }
-    }
-
-    private fun dispatchFrameToVision(bmp: Bitmap, isThermal: Boolean, sourceName: String) {
+    private fun dispatchFrameToVision(bmp: Bitmap) {
         isProcessingFrame = true
         visionHandler.post {
             try {
-                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp, isThermal) else emptyList()
+                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp) else emptyList()
                 bmp.recycle()
 
-                val hasMotion = targets.any { it.isMoving }
+                val hasMotion = targets.any { it.type == TargetType.MOVING }
                 if (hasMotion && isTrackingEnabled) {
                     alertManager.triggerMotionAlert()
                 }
@@ -177,13 +174,12 @@ class MainActivity : AppCompatActivity() {
                     crosshairOverlay.invalidate()
 
                     if (!isTrackingEnabled) {
-                        tvStatus.text = "Трекинг целей: ВЫКЛЮЧЕН"
+                        tvStatus.text = "Трекинг: ВЫКЛЮЧЕН"
                     } else if (targets.isNotEmpty()) {
-                        val maxTarget = targets.maxByOrNull { it.contrastScore }
-                        val score = maxTarget?.contrastScore?.toInt() ?: 0
-                        tvStatus.text = "Движущихся целей: " + targets.size + " (Контраст: " + score + ") [" + sourceName + "]"
+                        val movingCount = targets.count { it.type == TargetType.MOVING }
+                        tvStatus.text = "Целей: " + targets.size + " (Движение: " + movingCount + ")"
                     } else {
-                        tvStatus.text = "Поиск движущихся целей: АКТИВЕН [" + sourceName + "]"
+                        tvStatus.text = "Поиск целей: АКТИВЕН"
                     }
                 }
             } catch (e: Exception) {
@@ -249,7 +245,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
-        // Кнопка включения/выключения трекинга
         btnTracking.setOnClickListener {
             isTrackingEnabled = !isTrackingEnabled
             if (isTrackingEnabled) {
@@ -260,42 +255,33 @@ class MainActivity : AppCompatActivity() {
                 btnTracking.setBackgroundColor(0xFF444444.toInt())
                 crosshairOverlay.detectedTargets = emptyList()
                 crosshairOverlay.invalidate()
-                tvStatus.text = "Трекинг целей: ВЫКЛЮЧЕН"
+                tvStatus.text = "Трекинг: ВЫКЛЮЧЕН"
             }
         }
 
-        // Кнопка "Во весь экран" на тепловизоре
+        // Кнопка "Во весь экран" на окне тепловизора
         btnThermalFullscreen.setOnClickListener {
             if (!isThermalFullscreen) {
-                savedWeightThermal = currentWeightThermal
-                savedWeightOptical = currentWeightOptical
                 isThermalFullscreen = true
                 btnThermalFullscreen.text = "⤡"
                 setSplitRatio(1.0f, 0.0f, "ТЕПЛО 100%")
             } else {
                 isThermalFullscreen = false
                 btnThermalFullscreen.text = "⛶"
-                val label = when {
-                    savedWeightThermal == 1.0f && savedWeightOptical == 1.0f -> "50/50"
-                    savedWeightThermal > savedWeightOptical -> "70/30"
-                    else -> "30/70"
-                }
-                setSplitRatio(savedWeightThermal, savedWeightOptical, label)
+                setSplitRatio(0.7f, 0.3f, "70/30")
             }
         }
 
-        // Переключение режимов пропорций
+        // Переключение режимов: 70/30 -> ТЕПЛО 100% -> ОПТИКА 100%
         btnMode.setOnClickListener {
-            displayMode = (displayMode + 1) % 5
-            isThermalFullscreen = false
-            btnThermalFullscreen.text = "⛶"
+            displayMode = (displayMode + 1) % 3
+            isThermalFullscreen = (displayMode == 1)
+            btnThermalFullscreen.text = if (isThermalFullscreen) "⤡" else "⛶"
 
             when (displayMode) {
-                0 -> setSplitRatio(1.0f, 1.0f, "50/50")
-                1 -> setSplitRatio(0.7f, 0.3f, "70/30")
-                2 -> setSplitRatio(0.3f, 0.7f, "30/70")
-                3 -> setSplitRatio(1.0f, 0.0f, "ТЕПЛО 100%")
-                4 -> setSplitRatio(0.0f, 1.0f, "ОПТИКА 100%")
+                0 -> setSplitRatio(0.7f, 0.3f, "70/30")
+                1 -> setSplitRatio(1.0f, 0.0f, "ТЕПЛО 100%")
+                2 -> setSplitRatio(0.0f, 1.0f, "ОПТИКА 100%")
             }
         }
 
@@ -303,15 +289,27 @@ class MainActivity : AppCompatActivity() {
             showResolutionDialog()
         }
 
+        // Кнопка ЮСТИРОВКА
         btnCalibrate.setOnClickListener {
             crosshairOverlay.isCalibrationMode = !crosshairOverlay.isCalibrationMode
             if (crosshairOverlay.isCalibrationMode) {
-                btnCalibrate.text = "ТЯНИ: ВКЛ"
-                btnCalibrate.setBackgroundColor(0xAAFF8800.toInt())
+                btnCalibrate.text = "ЮСТИРОВКА: ВКЛ"
+                btnCalibrate.setBackgroundColor(0xFFCC0000.toInt()) // Красный при активной юстировке
+                Toast.makeText(this, "Перемещайте оптический прицел пальцем", Toast.LENGTH_SHORT).show()
             } else {
-                btnCalibrate.text = "ТЯНИ: ФИКС"
+                btnCalibrate.text = "ЮСТИРОВКА"
                 btnCalibrate.setBackgroundColor(0xFF444444.toInt())
+
+                // Запоминаем позицию в память телефона
+                val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
+                prefs.edit()
+                    .putFloat("opticalOffsetX", crosshairOverlay.opticalOffsetX)
+                    .putFloat("opticalOffsetY", crosshairOverlay.opticalOffsetY)
+                    .apply()
+
+                Toast.makeText(this, "Позиция прицела сохранена", Toast.LENGTH_SHORT).show()
             }
+            crosshairOverlay.invalidate()
         }
 
         btnSound.setOnClickListener {
@@ -335,20 +333,10 @@ class MainActivity : AppCompatActivity() {
                 btnFlash.setBackgroundColor(0xFF444444.toInt())
             }
         }
-
-        tvStatus.setOnClickListener {
-            forceAnalysisSource = (forceAnalysisSource + 1) % 3
-            val name = when (forceAnalysisSource) {
-                1 -> "ПРИНУДИТЕЛЬНО ОПТИКА"
-                2 -> "ПРИНУДИТЕЛЬНО ТЕПЛОВИЗОР"
-                else -> "АВТОВЫБОР"
-            }
-            Toast.makeText(this, "Анализ: " + name, Toast.LENGTH_SHORT).show()
-        }
     }
 
     /**
-     * Сверхнадежное переключение пропорций экрана без сбоев ConstraintLayout
+     * Переключение пропорций: 70/30, 100% Тепло, 100% Оптика
      */
     private fun setSplitRatio(weightThermal: Float, weightOptical: Float, modeLabel: String) {
         val lpT = cameraView.layoutParams as LinearLayout.LayoutParams
@@ -363,9 +351,16 @@ class MainActivity : AppCompatActivity() {
         cameraView.layoutParams = lpT
         phoneCameraView.layoutParams = lpO
 
-        currentWeightThermal = weightThermal
-        currentWeightOptical = weightOptical
         btnMode.text = modeLabel
+
+        // Для честного 100% полного экрана подстраиваем пропорцию под дисплей
+        if (weightThermal == 1.0f && weightOptical == 0.0f) {
+            val screenW = rootLayout.width.takeIf { it > 0 } ?: 1920
+            val screenH = rootLayout.height.takeIf { it > 0 } ?: 1080
+            cameraView.setAspectRatio(screenW, screenH)
+        } else {
+            cameraView.setAspectRatio(thermalWidth, thermalHeight)
+        }
 
         rootLayout.post { updateOverlayBounds() }
     }
