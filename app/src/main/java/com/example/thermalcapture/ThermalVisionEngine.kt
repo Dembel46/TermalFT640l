@@ -106,7 +106,7 @@ class ThermalVisionEngine {
             }
         }
 
-        // 3. Гибридная маска: контрастные цели Top-Hat ИЛИ выраженные яркие/тепловые пятна
+        // 3. Выявление кандидатов (Top-Hat ИЛИ яркие горячие пятна)
         for (i in 0 until totalPixels) {
             val localDiff = currentLuma[i] - openedLuma[i]
             val isTopHatHot = localDiff > contrastThreshold
@@ -116,7 +116,7 @@ class ThermalVisionEngine {
             visited[i] = false
         }
 
-        // 4. Поиск связанных контуров (BFS)
+        // 4. Поиск связанных областей (BFS)
         val rawBlobs = mutableListOf<RawBlob>()
         val queueX = IntArray(2048)
         val queueY = IntArray(2048)
@@ -140,25 +140,12 @@ class ThermalVisionEngine {
                     var maxL = currentLuma[idx]
                     var count = 0
 
-                    while (head < tail && tail < 2040) {
-                        val qx = queueX[head++]
-                        count++
-
-                        minX = min(minX, qx)
-                        maxX = max(maxX, qx)
-                        minY = min(minY, qy)
-                        maxY = max(maxY, qy)
-                        val l = currentLuma[qy * procW + qx]
-                        if (l > maxL) maxL = l
-
-                        val neighbors = arrayOf(Pair(qx + 1, qy), Pair(qx - 1, qy), Pair(qx, qy + 1), Pair(qx, qy - 1))
-                        for (nb in neighbors) {
-                            val nx = nb.first
-                            val ny = nb.second
-                            if (nx in 0 until procW && ny in 0 until procH) {
-                                val nIdx = ny * procW + nx
-                                if (candidateMask[nIdx] && !visited[nIdx]) {
-                                    visited[nIdx] = true
+                    fun checkAndPush(nx: Int, ny: Int) {
+                        if (nx in 0 until procW && ny in 0 until procH) {
+                            val nIdx = ny * procW + nx
+                            if (candidateMask[nIdx] && !visited[nIdx]) {
+                                visited[nIdx] = true
+                                if (tail < 2040) {
                                     queueX[tail] = nx
                                     queueY[tail] = ny
                                     tail++
@@ -167,7 +154,26 @@ class ThermalVisionEngine {
                         }
                     }
 
-                    // Фильтрация размеров цели (от точечной до средней)
+                    while (head < tail && tail < 2040) {
+                        val qx = queueX[head]
+                        val qy = queueY[head]
+                        head++
+                        count++
+
+                        if (qx < minX) minX = qx
+                        if (qx > maxX) maxX = qx
+                        if (qy < minY) minY = qy
+                        if (qy > maxY) maxY = qy
+
+                        val l = currentLuma[qy * procW + qx]
+                        if (l > maxL) maxL = l
+
+                        checkAndPush(qx + 1, qy)
+                        checkAndPush(qx - 1, qy)
+                        checkAndPush(qx, qy + 1)
+                        checkAndPush(qx, qy - 1)
+                    }
+
                     if (count in 3..2500) {
                         rawBlobs.add(RawBlob(minX, minY, maxX, maxY, maxL))
                     }
@@ -175,7 +181,7 @@ class ThermalVisionEngine {
             }
         }
 
-        // 5. Детекция движения
+        // 5. Детекция движения и формирование списка целей
         val currentTargets = mutableListOf<DetectedTarget>()
         for (blob in rawBlobs) {
             var motionEnergy = 0
