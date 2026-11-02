@@ -58,11 +58,8 @@ class MainActivity : AppCompatActivity() {
     private var isVisionRunning = true
     private var isProcessingFrame = false
 
-    // Флаг реального приема видеопотока с USB платы захвата FT640L
     private var isThermalStreaming = false
-
-    // Принудительный выбор источника анализа: AUTO, FORCE_OPTICAL, FORCE_THERMAL
-    private var forceAnalysisSource = 0 // 0 - AUTO, 1 - ОПТИКА, 2 - ТЕПЛО
+    private var forceAnalysisSource = 0
 
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 256, Bitmap.Config.ARGB_8888)
 
@@ -106,9 +103,6 @@ class MainActivity : AppCompatActivity() {
         btnResolution.text = "" + w + "x" + h
     }
 
-    /**
-     * Конвейер компьютерного зрения с автоматическим выбором активной камеры
-     */
     private fun initVisionPipeline() {
         visionThread = HandlerThread("VisionProcessingThread").apply { start() }
         visionHandler = Handler(visionThread.looper)
@@ -119,9 +113,9 @@ class MainActivity : AppCompatActivity() {
 
                 if (!isProcessingFrame) {
                     val useThermal = when (forceAnalysisSource) {
-                        1 -> false // Принудительно оптика
-                        2 -> true  // Принудительно тепловизор
-                        else -> isThermalStreaming // AUTO: если подключена плата захвата
+                        1 -> false
+                        2 -> true
+                        else -> isThermalStreaming
                     }
 
                     if (useThermal && cameraView.width > 0 && cameraView.holder.surface?.isValid == true) {
@@ -131,7 +125,7 @@ class MainActivity : AppCompatActivity() {
                             PixelCopy.request(cameraView, srcRect, thermalAnalyzeBmp, { result ->
                                 if (result == PixelCopy.SUCCESS) {
                                     val copy = thermalAnalyzeBmp.copy(Bitmap.Config.ARGB_8888, false)
-                                    dispatchFrameToVision(copy, isThermal = true, "Тепловизор")
+                                    dispatchFrameToVision(copy, true, "Тепловизор")
                                 } else {
                                     analyzeOpticalFallback()
                                 }
@@ -152,7 +146,7 @@ class MainActivity : AppCompatActivity() {
     private fun analyzeOpticalFallback() {
         val opticalBmp = phoneCameraView.bitmap
         if (opticalBmp != null) {
-            dispatchFrameToVision(opticalBmp, isThermal = false, "Оптика")
+            dispatchFrameToVision(opticalBmp, false, "Оптика")
         }
     }
 
@@ -290,7 +284,6 @@ class MainActivity : AppCompatActivity() {
             showTemperatureCalibrationDialog()
         }
 
-        // Переключение источника аналитики по нажатию на строку статуса
         tvStatus.setOnClickListener {
             forceAnalysisSource = (forceAnalysisSource + 1) % 3
             val name = when (forceAnalysisSource) {
@@ -483,4 +476,41 @@ class MainActivity : AppCompatActivity() {
                     isThermalStreaming = true
                     runOnUiThread { tvStatus.text = "FT640L (" + thermalWidth + "x" + thermalHeight + "): Поток активен" }
                     startPreview()
-                    cameraV
+                    cameraView.holder.surface?.let { surface ->
+                        if (surface.isValid) {
+                            addSurface(surface, false)
+                        }
+                    }
+                }
+
+                override fun onCameraClose(device: UsbDevice) {
+                    isThermalStreaming = false
+                    runOnUiThread { tvStatus.text = "Тепловизор закрыт" }
+                }
+
+                override fun onDeviceClose(device: UsbDevice) {
+                    isThermalStreaming = false
+                    runOnUiThread { tvStatus.text = "Плата отключена" }
+                }
+
+                override fun onDetach(device: UsbDevice) {
+                    isThermalStreaming = false
+                    runOnUiThread { tvStatus.text = "Плата захвата извлечена" }
+                }
+
+                override fun onCancel(device: UsbDevice) {
+                    isThermalStreaming = false
+                    runOnUiThread { tvStatus.text = "Подключение отменено" }
+                }
+            })
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        isVisionRunning = false
+        visionThread.quitSafely()
+        alertManager.release()
+        cameraHelper?.release()
+    }
+}
