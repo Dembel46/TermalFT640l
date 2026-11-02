@@ -115,7 +115,7 @@ class ThermalVisionEngine {
             visited[i] = false
         }
 
-        // 2. Кластеризация контуров
+        // 2. Поиск связных областей
         val rawBlobs = mutableListOf<RawBlob>()
         val queueX = IntArray(2048)
         val queueY = IntArray(2048)
@@ -181,24 +181,23 @@ class ThermalVisionEngine {
                         checkAndPush(qx, qy - 1)
                     }
 
+                    // Построение замкнутого силуэтного контура по граням
                     val silhouette = mutableListOf<PointF>()
-                    val bw = maxX - minX + 1
-                    val bh = maxY - minY + 1
-
-                    if (bw > 9 || bh > 9) {
-                        for (ry in minY..maxY) {
-                            val rx = rowMaxX[ry]
-                            if (rx >= 0) {
-                                silhouette.add(PointF(rx.toFloat() / procW, ry.toFloat() / procH))
-                            }
-                        }
-                        for (ry in maxY downTo minY) {
-                            val lx = rowMinX[ry]
-                            if (lx < procW) {
-                                silhouette.add(PointF(lx.toFloat() / procW, ry.toFloat() / procH))
-                            }
+                    for (ry in minY..maxY) {
+                        val rx = rowMaxX[ry]
+                        if (rx >= 0) {
+                            silhouette.add(PointF(rx.toFloat() / procW, ry.toFloat() / procH))
                         }
                     }
+                    for (ry in maxY downTo minY) {
+                        val lx = rowMinX[ry]
+                        if (lx < procW) {
+                            silhouette.add(PointF(lx.toFloat() / procW, ry.toFloat() / procH))
+                        }
+                    }
+
+                    val bw = maxX - minX + 1
+                    val bh = maxY - minY + 1
 
                     if (count in 3..2500) {
                         rawBlobs.add(RawBlob(minX, minY, maxX, maxY, maxL, count, silhouette))
@@ -207,7 +206,7 @@ class ThermalVisionEngine {
             }
         }
 
-        // 3. Анализ движения с надежным фильтром аналогового шума тепловизора
+        // 3. Анализ движения и классификация
         val finalTargets = mutableListOf<DetectedTarget>()
         val activeIds = mutableSetOf<Int>()
 
@@ -217,7 +216,6 @@ class ThermalVisionEngine {
                 for (by in blob.minY..blob.maxY) {
                     val r = by * procW
                     for (bx in blob.minX..blob.maxX) {
-                        // Порог разницы увеличен до 22 для отсечения шума матрицы
                         val d = abs(currentLuma[r + bx] - prevLuma[r + bx])
                         if (d > 22) motionPixels++
                     }
@@ -292,19 +290,16 @@ class ThermalVisionEngine {
                 )
             }
 
-            // АНТИШУМ: Движение подтверждается только при существенном изменении площади или переносе центра
             val isPixelMoving = motionPixels >= 8 && (motionPixels.toFloat() / blob.pixelCount) >= 0.18f
             val isCentroidMoving = centroidShift > 0.007f
             val isMoving = isPixelMoving || isCentroidMoving
 
-            // КЛАССИФИКАЦИЯ ОБЪЕКТА
             val targetType = when {
-                isMoving -> TargetType.MOVING // Красный
-                // Человек (вытянутый по вертикали) или автомобиль (широкий по горизонтали) или крупная цель
+                isMoving -> TargetType.MOVING
                 (bh >= bw * 1.25f && bh >= 10) || (bw >= bh * 1.3f && bw >= 12) || blob.pixelCount >= 35 ->
-                    TargetType.HUMAN_VEHICLE // Бледно-желтый
+                    TargetType.HUMAN_VEHICLE
                 else ->
-                    TargetType.OTHER // Бледно-зеленый
+                    TargetType.OTHER
             }
 
             finalTargets.add(
