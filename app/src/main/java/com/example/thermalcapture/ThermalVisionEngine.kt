@@ -8,23 +8,21 @@ import kotlin.math.min
 
 data class DetectedTarget(
     val id: Int,
-    val bounds: RectF,          // Координаты рамки (нормализованные 0.0..1.0)
-    val maxLuma: Int,           // Пиковая яркость (0..255)
-    val estimatedTemp: Float,   // Расчетная температура в °C
-    val isMoving: Boolean       // Флаг движения
+    val bounds: RectF,
+    val maxLuma: Int,
+    val estimatedTemp: Float,
+    val isMoving: Boolean
 )
 
 class ThermalVisionEngine {
 
-    // Коэффициенты формулы температуры: T = tempSlope * Luma + tempOffset
-    // По умолчанию настроено на диапазон типичного тепловизора: Luma 0 -> -10°C, Luma 255 -> +90°C
+    // Формула температуры: T = tempSlope * Luma + tempOffset
     var tempSlope: Float = 0.392f
     var tempOffset: Float = -10.0f
 
-    // Порог выделения контрастной точки (Top-Hat threshold)
-    var contrastThreshold: Int = 35
+    // Порог контраста (снижен до 20 для уверенного захвата теплых целей)
+    var contrastThreshold: Int = 20
 
-    // Разрешение сетки анализа (для обеспечения скорости 30 FPS без нагрузки на процессор)
     private val procW = 160
     private val procH = 120
     private val totalPixels = procW * procH
@@ -39,9 +37,6 @@ class ThermalVisionEngine {
     private val prevTargets = mutableListOf<DetectedTarget>()
     private var hasPrevFrame = false
 
-    /**
-     * Двухточечная калибровка температуры по двум известным опорным объектам
-     */
     fun calibrate(luma1: Int, temp1: Float, luma2: Int, temp2: Float) {
         if (luma1 != luma2) {
             tempSlope = (temp2 - temp1) / (luma2 - luma1)
@@ -49,16 +44,10 @@ class ThermalVisionEngine {
         }
     }
 
-    /**
-     * Расчет температуры по яркости пикселя (0..255)
-     */
     fun calculateTemp(luma: Int): Float {
         return tempSlope * luma + tempOffset
     }
 
-    /**
-     * Анализ кадра: морфология Top-Hat + детекция движения + трекинг
-     */
     fun processFrame(frameBitmap: Bitmap): List<DetectedTarget> {
         val scaled = if (frameBitmap.width == procW && frameBitmap.height == procH) {
             frameBitmap
@@ -72,7 +61,7 @@ class ThermalVisionEngine {
             scaled.recycle()
         }
 
-        // 1. Быстрое извлечение канала яркости Luma
+        // 1. Извлечение Luma
         for (i in 0 until totalPixels) {
             val p = pixels[i]
             val r = (p shr 16) and 0xFF
@@ -81,8 +70,7 @@ class ThermalVisionEngine {
             currentLuma[i] = (r * 77 + g * 150 + b * 29) shr 8
         }
 
-        // 2. Морфологическая операция Top-Hat (White Top-Hat = Original - Opening)
-        // Эрозия (ядро 5x5)
+        // 2. Морфология Top-Hat (эрозия + дилатация)
         val kRadius = 2
         val eroded = IntArray(totalPixels)
         for (y in kRadius until procH - kRadius) {
@@ -100,7 +88,6 @@ class ThermalVisionEngine {
             }
         }
 
-        // Дилатация (восстановление фона)
         for (y in kRadius until procH - kRadius) {
             val row = y * procW
             for (x in kRadius until procW - kRadius) {
@@ -116,17 +103,17 @@ class ThermalVisionEngine {
             }
         }
 
-        // 3. Вычитание фона: выявляем яркие контрастные микро-цели
+        // 3. Вычитание фона
         for (i in 0 until totalPixels) {
             val diff = currentLuma[i] - openedLuma[i]
             topHatMask[i] = diff > contrastThreshold
             visited[i] = false
         }
 
-        // 4. Поиск связных областей (Blob Extraction / Bounding Boxes)
+        // 4. Поиск связных областей
         val rawBlobs = mutableListOf<RawBlob>()
-        val queueX = IntArray(1024)
-        val queueY = IntArray(1024)
+        val queueX = IntArray(2048)
+        val queueY = IntArray(2048)
 
         for (y in 2 until procH - 2) {
             val row = y * procW
@@ -147,7 +134,7 @@ class ThermalVisionEngine {
                     var maxL = currentLuma[idx]
                     var pixelCount = 0
 
-                    while (head < tail && tail < 1020) {
+                    while (head < tail && tail < 2040) {
                         val qx = queueX[head]
                         val qy = queueY[head]
                         head++
@@ -160,7 +147,6 @@ class ThermalVisionEngine {
                         val l = currentLuma[qy * procW + qx]
                         if (l > maxL) maxL = l
 
-                        // Обход 4 соседей
                         val neighbors = arrayOf(Pair(qx + 1, qy), Pair(qx - 1, qy), Pair(qx, qy + 1), Pair(qx, qy - 1))
                         for (nb in neighbors) {
                             val nx = nb.first
@@ -177,15 +163,15 @@ class ThermalVisionEngine {
                         }
                     }
 
-                    // Фильтр размера: отсекаем одиночные шумы (меньше 3 px) и гигантские засветки (больше 400 px)
-                    if (pixelCount in 3..400) {
+                    // Отсекаем только одиночный микро-шум (меньше 2 пикселей)
+                    if (pixelCount in 2..1500) {
                         rawBlobs.add(RawBlob(minX, minY, maxX, maxY, maxL))
                     }
                 }
             }
         }
 
-        // 5. Анализ движения (межкадровая разность)
+        // 5. Детекция движения
         val currentTargets = mutableListOf<DetectedTarget>()
         for (blob in rawBlobs) {
             var motionEnergy = 0
@@ -194,13 +180,12 @@ class ThermalVisionEngine {
                     val r = by * procW
                     for (bx in blob.minX..blob.maxX) {
                         val d = abs(currentLuma[r + bx] - prevLuma[r + bx])
-                        if (d > 18) motionEnergy++
+                        if (d > 14) motionEnergy++
                     }
                 }
             }
-            val isMoving = motionEnergy > 3
+            val isMoving = motionEnergy > 2
 
-            // Нормализация координат рамки в диапазон 0.0..1.0
             val normRect = RectF(
                 blob.minX.toFloat() / procW,
                 blob.minY.toFloat() / procH,
@@ -210,12 +195,11 @@ class ThermalVisionEngine {
 
             val temp = calculateTemp(blob.maxLuma)
 
-            // Простой трекинг по близости центроидов
             var assignedId = nextTargetId++
             for (prev in prevTargets) {
                 val dx = abs(prev.bounds.centerX() - normRect.centerX())
                 val dy = abs(prev.bounds.centerY() - normRect.centerY())
-                if (dx < 0.08f && dy < 0.08f) {
+                if (dx < 0.12f && dy < 0.12f) {
                     assignedId = prev.id
                     break
                 }
@@ -232,7 +216,6 @@ class ThermalVisionEngine {
             )
         }
 
-        // Сохраняем текущий кадр для следующего шага
         System.arraycopy(currentLuma, 0, prevLuma, 0, totalPixels)
         hasPrevFrame = true
         prevTargets.clear()
