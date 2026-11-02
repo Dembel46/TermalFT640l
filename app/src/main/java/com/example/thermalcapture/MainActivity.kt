@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.view.Gravity
 import android.view.PixelCopy
 import android.view.SurfaceHolder
 import android.view.View
@@ -102,9 +103,6 @@ class MainActivity : AppCompatActivity() {
 
         alertManager = AlertManager(this)
 
-        // 4:3 стандартное соотношение для исключения деформаций
-        cameraView.setAspectRatio(4, 3)
-
         initVisionPipeline()
         initViews()
         initButtons()
@@ -134,13 +132,19 @@ class MainActivity : AppCompatActivity() {
                             PixelCopy.request(cameraView, srcRect, thermalAnalyzeBmp, { result ->
                                 if (result == PixelCopy.SUCCESS) {
                                     val copy = thermalAnalyzeBmp.copy(Bitmap.Config.ARGB_8888, false)
-                                    dispatchFrameToVision(copy)
+                                    dispatchFrameToVision(copy, isThermal = true)
                                 } else {
                                     isProcessingFrame = false
                                 }
                             }, mainHandler)
                         } catch (e: Exception) {
                             isProcessingFrame = false
+                        }
+                    } else {
+                        // Если тепловизор не подключен — анализируем штатную камеру
+                        val opticalBmp = phoneCameraView.bitmap
+                        if (opticalBmp != null) {
+                            dispatchFrameToVision(opticalBmp, isThermal = false)
                         }
                     }
                 }
@@ -150,11 +154,11 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    private fun dispatchFrameToVision(bmp: Bitmap) {
+    private fun dispatchFrameToVision(bmp: Bitmap, isThermal: Boolean) {
         isProcessingFrame = true
         visionHandler.post {
             try {
-                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp) else emptyList()
+                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp, isThermal) else emptyList()
                 bmp.recycle()
 
                 val hasMotion = targets.any { it.type == TargetType.MOVING }
@@ -170,7 +174,8 @@ class MainActivity : AppCompatActivity() {
                         tvStatus.text = "Трекинг: ВЫКЛЮЧЕН"
                     } else if (targets.isNotEmpty()) {
                         val movingCount = targets.count { it.type == TargetType.MOVING }
-                        tvStatus.text = "Целей: " + targets.size + " (Движение: " + movingCount + ")"
+                        val srcLabel = if (isThermal) "Тепло" else "Оптика"
+                        tvStatus.text = "Целей: " + targets.size + " (Движение: " + movingCount + ") [" + srcLabel + "]"
                     } else {
                         tvStatus.text = "Поиск целей: АКТИВЕН"
                     }
@@ -222,7 +227,40 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Точное вписывание 4:3 внутрь контейнера без наезда на соседей
+     */
+    private fun adjustThermalViewBounds() {
+        val containerW = thermalContainer.width
+        val containerH = thermalContainer.height
+        if (containerW <= 0 || containerH <= 0) return
+
+        val targetRatio = 4f / 3f
+        val containerRatio = containerW.toFloat() / containerH.toFloat()
+
+        val fitW: Int
+        val fitH: Int
+
+        if (containerRatio > targetRatio) {
+            fitH = containerH
+            fitW = (containerH * targetRatio).toInt()
+        } else {
+            fitW = containerW
+            fitH = (containerW / targetRatio).toInt()
+        }
+
+        val lp = cameraView.layoutParams as FrameLayout.LayoutParams
+        if (lp.width != fitW || lp.height != fitH) {
+            lp.width = fitW
+            lp.height = fitH
+            lp.gravity = Gravity.CENTER
+            cameraView.layoutParams = lp
+        }
+    }
+
     private fun updateOverlayBounds() {
+        adjustThermalViewBounds()
+
         if (thermalContainer.visibility == View.VISIBLE && cameraView.width > 0 && cameraView.height > 0) {
             val locT = IntArray(2)
             cameraView.getLocationOnScreen(locT)
@@ -349,7 +387,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Переключение пропорций через изолированные контейнеры (без наездов окон)
+     * Переключение пропорций: 70/30, 100% Тепло, 100% Оптика
      */
     private fun setSplitRatio(weightThermal: Float, weightOptical: Float, modeLabel: String) {
         val lpT = thermalContainer.layoutParams as LinearLayout.LayoutParams
@@ -386,9 +424,8 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Пропорции тепловизора:")
             .setItems(resolutions) { _, which ->
                 val chosen = sizes[which]
-                cameraView.setAspectRatio(chosen.first, chosen.second)
                 btnResolution.text = "" + chosen.first + ":" + chosen.second
-                Toast.makeText(this, "Установлено: " + resolutions[which], Toast.LENGTH_SHORT).show()
+                cameraView.setAspectRatio(chosen.first, chosen.second)
                 rootLayout.post { updateOverlayBounds() }
             }
             .show()
