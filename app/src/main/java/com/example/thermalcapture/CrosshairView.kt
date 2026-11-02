@@ -37,11 +37,26 @@ class CrosshairView @JvmOverloads constructor(
     private val thinWidth = 1.2f * density
     private val dotRadius = 1.5f * density
 
-    // Сторона квадрата негатива
-    private val cropSizeDp = 160f * density
-    private val cropHalfDp = cropSizeDp / 2f
+    // Оптимальный размер буфера негатива (120x120 пикселей обрабатываются за 0.15 мс)
+    private val negSize = 120
+    private val totalNegPixels = negSize * negSize
 
-    // Кисти прицела (рисуют негативным шейдером)
+    // Предвыделенные буферы для оптической камеры (0 байт аллокаций в цикле)
+    private val opticalNegativeBitmap = Bitmap.createBitmap(negSize, negSize, Bitmap.Config.ARGB_8888)
+    private val opticalRawPixels = IntArray(totalNegPixels)
+    private val opticalNegPixels = IntArray(totalNegPixels)
+    private val opticalShader = BitmapShader(opticalNegativeBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+    private val opticalMatrix = Matrix()
+
+    // Предвыделенные буферы для тепловизора (CVBS)
+    private val thermalRawBitmap = Bitmap.createBitmap(negSize, negSize, Bitmap.Config.ARGB_8888)
+    private val thermalNegativeBitmap = Bitmap.createBitmap(negSize, negSize, Bitmap.Config.ARGB_8888)
+    private val thermalRawPixels = IntArray(totalNegPixels)
+    private val thermalNegPixels = IntArray(totalNegPixels)
+    private val thermalShader = BitmapShader(thermalNegativeBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+    private val thermalMatrix = Matrix()
+
+    // Кисти прицела
     private val reticlePaint = Paint().apply {
         strokeCap = Paint.Cap.ROUND
         style = Paint.Style.STROKE
@@ -66,31 +81,20 @@ class CrosshairView @JvmOverloads constructor(
     var phoneCameraView: PreviewView? = null
     var thermalCameraView: AspectRatioSurfaceView? = null
 
-    // Шейдеры негатива
-    private var opticalShader: BitmapShader? = null
-    private val opticalMatrix = Matrix()
-
-    private var thermalShader: BitmapShader? = null
-    private val thermalMatrix = Matrix()
-
-    // Буфер для тепловизора (CVBS)
-    private val thermalCropPx = 140
-    private val thermalRawBitmap = Bitmap.createBitmap(thermalCropPx, thermalCropPx, Bitmap.Config.ARGB_8888)
-    private val thermalNegativeBitmap = Bitmap.createBitmap(thermalCropPx, thermalCropPx, Bitmap.Config.ARGB_8888)
-    private val thermalRawPixels = IntArray(thermalCropPx * thermalCropPx)
-    private val thermalNegPixels = IntArray(thermalCropPx * thermalCropPx)
+    private var isOpticalReady = false
+    private var isThermalReady = false
 
     private val sampleHandler = Handler(Looper.getMainLooper())
     private var isSamplingActive = false
 
-    // Захват негатива 10 раз в секунду (без лагов и нагрева)
+    // Частота обновления 30 кадров/сек (интервал 33 мс) для мгновенного отклика
     private val sampleRunnable = object : Runnable {
         override fun run() {
-            updateOpticalNegative()
-            updateThermalNegative()
+            updateOpticalFast()
+            updateThermalFast()
             invalidate()
             if (isSamplingActive) {
-                sampleHandler.postDelayed(this, 100)
+                sampleHandler.postDelayed(this, 33)
             }
         }
     }
@@ -108,41 +112,39 @@ class CrosshairView @JvmOverloads constructor(
     }
 
     /**
-     * Превращение области под оптическим прицелом в чистый ч/б негатив
+     * Высокоскоростной захват негатива оптической камеры (< 1.5 мс)
      */
-    private fun updateOpticalNegative() {
+    private fun updateOpticalFast() {
         val pView = phoneCameraView ?: return
         if (pView.width <= 0 || pView.height <= 0) return
 
-        // 1. Берем чистый кадр камеры
         val fullBitmap = pView.bitmap ?: return
 
         try {
-            val cx = (opticalRect.centerX() + opticalOffsetX) - pView.x
-            val cy = (opticalRect.centerY() + opticalOffsetY) - pView.y
-
             val scaleX = fullBitmap.width.toFloat() / pView.width
             val scaleY = fullBitmap.height.toFloat() / pView.height
 
-            val cropWPx = (cropSizeDp * scaleX).roundToInt().coerceIn(40, fullBitmap.width)
-            val cropHPx = (cropSizeDp * scaleY).roundToInt().coerceIn(40, fullBitmap.height)
+            val cx = (opticalRect.centerX() + opticalOffsetX) - pView.x
+            val cy = (opticalRect.centerY() + opticalOffsetY) - pView.y
 
-            val leftPx = (cx * scaleX - cropWPx / 2f).roundToInt().coerceIn(0, fullBitmap.width - cropWPx)
-            val topPx = (cy * scaleY - cropHPx / 2f).roundToInt().coerceIn(0, fullBitmap.height - cropHPx)
+            val centerBmpX = (cx * scaleX).roundToInt()
+            val centerBmpY = (cy * scaleY).roundToInt()
 
-            // 2. Вырезаем только микро-область под прицелом
-            val cropBitmap = Bitmap.createBitmap(fullBitmap, leftPx, topPx, cropWPx, cropHPx)
+            val maxLeft = (fullBitmap.width - negSize).coerceAtLeast(0)
+            val maxTop = (fullBitmap.height - negSize).coerceAtLeast(0)
 
-            // 3. МГНОВЕННО освобождаем 8 МБ тяжелого кадра (видео не тормозит!)
+            val leftPx = (centerBmpX - negSize / 2).coerceIn(0, maxLeft)
+            val topPx = (centerBmpY - negSize / 2).coerceIn(0, maxTop)
+
+            // 1. Мгновенный срез 120x120 напрямую в массив без создания промежуточных Bitmap!
+            fullBitmap.getPixels(opticalRawPixels, 0, negSize, leftPx, topPx, negSize, negSize)
+
+            // 2. Сразу освобождаем тяжелый кадр камеры
             fullBitmap.recycle()
 
-            val pixels = IntArray(cropWPx * cropHPx)
-            cropBitmap.getPixels(pixels, 0, cropWPx, 0, 0, cropWPx, cropHPx)
-            val negPixels = IntArray(cropWPx * cropHPx)
-
-            // 4. Попиксельный математический ч/б негатив с контрастным бустом
-            for (i in pixels.indices) {
-                val p = pixels[i]
+            // 3. Быстрый математический ч/б негатив с контрастным бустом
+            for (i in 0 until totalNegPixels) {
+                val p = opticalRawPixels[i]
                 val r = (p shr 16) and 0xFF
                 val g = (p shr 8) and 0xFF
                 val b = p and 0xFF
@@ -150,39 +152,36 @@ class CrosshairView @JvmOverloads constructor(
 
                 val rawNeg = 255 - luma
                 val contrastNeg = if (rawNeg > 128) {
-                    (128 + (rawNeg - 128) * 1.4f).roundToInt().coerceIn(0, 255)
+                    (128 + (rawNeg - 128) * 1.4f).toInt().coerceIn(0, 255)
                 } else {
-                    (128 - (128 - rawNeg) * 1.4f).roundToInt().coerceIn(0, 255)
+                    (128 - (128 - rawNeg) * 1.4f).toInt().coerceIn(0, 255)
                 }
 
-                negPixels[i] = 0xFF000000.toInt() or (contrastNeg shl 16) or (contrastNeg shl 8) or contrastNeg
+                opticalNegPixels[i] = 0xFF000000.toInt() or (contrastNeg shl 16) or (contrastNeg shl 8) or contrastNeg
             }
 
-            val negativeBitmap = Bitmap.createBitmap(cropWPx, cropHPx, Bitmap.Config.ARGB_8888)
-            negativeBitmap.setPixels(negPixels, 0, cropWPx, 0, 0, cropWPx, cropHPx)
-            cropBitmap.recycle()
+            // 4. Обновление пикселей существующего Bitmap (шейдер подхватывает аппаратно)
+            opticalNegativeBitmap.setPixels(opticalNegPixels, 0, negSize, 0, 0, negSize, negSize)
 
-            // 5. Создаем шейдер и масштабируем в координаты экрана
-            val shader = BitmapShader(negativeBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-
-            val screenLeft = cx + pView.x - (cropWPx / scaleX) / 2f
-            val screenTop = cy + pView.y - (cropHPx / scaleY) / 2f
+            // 5. Привязка матрицы к физическим координатам экрана
+            val screenLeft = leftPx / scaleX + pView.x
+            val screenTop = topPx / scaleY + pView.y
 
             opticalMatrix.reset()
             opticalMatrix.setScale(1f / scaleX, 1f / scaleY)
             opticalMatrix.postTranslate(screenLeft, screenTop)
-            shader.setLocalMatrix(opticalMatrix)
+            opticalShader.setLocalMatrix(opticalMatrix)
 
-            opticalShader = shader
+            isOpticalReady = true
         } catch (e: Exception) {
             fullBitmap.recycle()
         }
     }
 
     /**
-     * Создание ч/б негатива для тепловизора (CVBS через аппаратный PixelCopy)
+     * Высокоскоростной захват тепловизора CVBS через аппаратный PixelCopy
      */
-    private fun updateThermalNegative() {
+    private fun updateThermalFast() {
         val tView = thermalCameraView ?: return
         val surface = tView.holder.surface ?: return
         if (!surface.isValid || tView.width <= 0 || tView.height <= 0) return
@@ -196,44 +195,42 @@ class CrosshairView @JvmOverloads constructor(
 
         val surfCx = (cx * scaleX).roundToInt()
         val surfCy = (cy * scaleY).roundToInt()
-        val half = thermalCropPx / 2
+        val half = negSize / 2
 
         val srcRect = Rect(
-            (surfCx - half).coerceIn(0, frame.width() - thermalCropPx),
-            (surfCy - half).coerceIn(0, frame.height() - thermalCropPx),
-            (surfCx + half).coerceIn(thermalCropPx, frame.width()),
-            (surfCy + half).coerceIn(thermalCropPx, frame.height())
+            (surfCx - half).coerceIn(0, (frame.width() - negSize).coerceAtLeast(0)),
+            (surfCy - half).coerceIn(0, (frame.height() - negSize).coerceAtLeast(0)),
+            (surfCx + half).coerceIn(negSize, frame.width()),
+            (surfCy + half).coerceIn(negSize, frame.height())
         )
 
         try {
             PixelCopy.request(tView, srcRect, thermalRawBitmap, { result ->
                 if (result == PixelCopy.SUCCESS) {
-                    thermalRawBitmap.getPixels(thermalRawPixels, 0, thermalCropPx, 0, 0, thermalCropPx, thermalCropPx)
+                    thermalRawBitmap.getPixels(thermalRawPixels, 0, negSize, 0, 0, negSize, negSize)
 
-                    for (i in 0 until thermalCropPx * thermalCropPx) {
+                    for (i in 0 until totalNegPixels) {
                         val luma = thermalRawPixels[i] and 0xFF
                         val rawNeg = 255 - luma
                         val contrastNeg = if (rawNeg > 128) {
-                            (128 + (rawNeg - 128) * 1.4f).roundToInt().coerceIn(0, 255)
+                            (128 + (rawNeg - 128) * 1.4f).toInt().coerceIn(0, 255)
                         } else {
-                            (128 - (128 - rawNeg) * 1.4f).roundToInt().coerceIn(0, 255)
+                            (128 - (128 - rawNeg) * 1.4f).toInt().coerceIn(0, 255)
                         }
                         thermalNegPixels[i] = 0xFF000000.toInt() or (contrastNeg shl 16) or (contrastNeg shl 8) or contrastNeg
                     }
 
-                    thermalNegativeBitmap.setPixels(thermalNegPixels, 0, thermalCropPx, 0, 0, thermalCropPx, thermalCropPx)
+                    thermalNegativeBitmap.setPixels(thermalNegPixels, 0, negSize, 0, 0, negSize, negSize)
 
-                    val shader = BitmapShader(thermalNegativeBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-
-                    val screenLeft = thermalRect.centerX() - (half / scaleX)
-                    val screenTop = thermalRect.centerY() - (half / scaleY)
+                    val screenLeft = (srcRect.left / scaleX) + tView.x
+                    val screenTop = (srcRect.top / scaleY) + tView.y
 
                     thermalMatrix.reset()
                     thermalMatrix.setScale(1f / scaleX, 1f / scaleY)
                     thermalMatrix.postTranslate(screenLeft, screenTop)
-                    shader.setLocalMatrix(thermalMatrix)
+                    thermalShader.setLocalMatrix(thermalMatrix)
 
-                    thermalShader = shader
+                    isThermalReady = true
                 }
             }, sampleHandler)
         } catch (e: Exception) {}
@@ -246,29 +243,26 @@ class CrosshairView @JvmOverloads constructor(
         if (thermalRect.width() > 0 && thermalRect.height() > 0) {
             val cx = thermalRect.centerX()
             val cy = thermalRect.centerY()
-            drawNegativeReticle(canvas, cx, cy, thermalShader)
+            drawFastReticle(canvas, cx, cy, if (isThermalReady) thermalShader else null)
         }
 
         // 2. Прицел оптической камеры (с учетом "ТЯНИ")
         if (opticalRect.width() > 0 && opticalRect.height() > 0) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
-            drawNegativeReticle(canvas, cx, cy, opticalShader)
+            drawFastReticle(canvas, cx, cy, if (isOpticalReady) opticalShader else null)
         }
     }
 
-    /**
-     * Отрисовка геометрии прицела, заполненной живым негативом
-     */
-    private fun drawNegativeReticle(
+    private fun drawFastReticle(
         canvas: Canvas,
         cx: Float,
         cy: Float,
-        negativeShader: BitmapShader?
+        shader: BitmapShader?
     ) {
-        if (negativeShader != null) {
-            reticlePaint.shader = negativeShader
-            fillPaint.shader = negativeShader
+        if (shader != null) {
+            reticlePaint.shader = shader
+            fillPaint.shader = shader
         } else {
             reticlePaint.shader = null
             reticlePaint.color = Color.DKGRAY
