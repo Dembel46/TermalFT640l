@@ -7,7 +7,7 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- 1. Тепловизор (UVC) -->
+    <!-- 1. Тепловизор (CVBS через UVC) -->
     <com.serenegiant.widget.AspectRatioSurfaceView
         android:id="@+id/svUvcCamera"
         android:layout_width="0dp"
@@ -17,18 +17,18 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- 2. Штатная камера телефона (COMPATIBLE режим для прямого доступа к пикселям) -->
+    <!-- 2. Штатная камера телефона (Performance SurfaceView для прямого аппаратного захвата) -->
     <androidx.camera.view.PreviewView
         android:id="@+id/pvPhoneCamera"
         android:layout_width="0dp"
         android:layout_height="match_parent"
-        app:implementationMode="compatible"
+        app:implementationMode="performance"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toEndOf="@+id/svUvcCamera"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- 3. Слой с адаптивными прицелами -->
+    <!-- 3. Слой негативного прицела -->
     <com.example.thermalcapture.CrosshairView
         android:id="@+id/crosshairOverlay"
         android:layout_width="match_parent"
