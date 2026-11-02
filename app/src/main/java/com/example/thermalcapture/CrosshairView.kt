@@ -64,7 +64,6 @@ class CrosshairView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
-    // Кисти машинного зрения
     private val boxMovingPaint = Paint().apply {
         color = Color.RED
         style = Paint.Style.STROKE
@@ -72,22 +71,15 @@ class CrosshairView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
-    private val boxStaticPaint = Paint().apply {
-        color = Color.parseColor("#FF9900")
-        style = Paint.Style.STROKE
-        strokeWidth = 2.0f * density
-        isAntiAlias = true
-    }
-
     private val textPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 10.5f * density
+        textSize = 10f * density
         isFakeBoldText = true
         isAntiAlias = true
     }
 
     private val textBgPaint = Paint().apply {
-        color = Color.parseColor("#AA000000")
+        color = Color.parseColor("#99000000")
         style = Paint.Style.FILL
     }
 
@@ -103,9 +95,7 @@ class CrosshairView @JvmOverloads constructor(
     var phoneCameraView: PreviewView? = null
     var thermalCameraView: AspectRatioSurfaceView? = null
 
-    // Цели машинного зрения и флаг источника (тепловизор или оптика)
     var detectedTargets: List<DetectedTarget> = emptyList()
-    var isTargetFromThermal: Boolean = false
 
     private var isOpticalReady = false
     private var isThermalReady = false
@@ -292,7 +282,6 @@ class CrosshairView @JvmOverloads constructor(
                             boxMovingPaint.strokeWidth = 2.5f * density
                             canvas.drawPath(path, boxMovingPaint)
 
-                            // Плашка с номером цели над силуэтом
                             val topY = win.top + target.bounds.top * win.height() + oy
                             val leftX = win.left + target.bounds.left * win.width() + ox
                             val label = "ЦЕЛЬ #" + target.id
@@ -312,14 +301,13 @@ class CrosshairView @JvmOverloads constructor(
                             val cx = win.left + target.bounds.centerX() * win.width() + ox
                             val cy = win.top + target.bounds.centerY() * win.height() + oy
 
-                            // Квадратный размер рамки (не менее 14x14 dp для идеальной видимости)
-                            val halfBox = max(7f * density, max(target.widthPx, target.heightPx) * density * 0.9f)
+                            // Безопасный расчет размера без конфликтов перегрузки max()
+                            val maxDim = target.widthPx.coerceAtLeast(target.heightPx).toFloat()
+                            val halfBox = (maxDim * density * 0.9f).coerceAtLeast(7f * density)
                             val boxRect = RectF(cx - halfBox, cy - halfBox, cx + halfBox, cy + halfBox)
 
                             boxMovingPaint.strokeWidth = 2f * density
                             canvas.drawRect(boxRect, boxMovingPaint)
-
-                            // Центральная точка внутри рамки
                             canvas.drawCircle(cx, cy, 1.5f * density, boxMovingPaint)
                         }
                     }
@@ -341,7 +329,13 @@ class CrosshairView @JvmOverloads constructor(
             drawFastReticle(canvas, cx, cy, if (isOpticalReady) opticalShader else null)
         }
     }
-    private fun drawFastReticle(canvas: Canvas, cx: Float, cy: Float, shader: BitmapShader?) {
+
+    private fun drawFastReticle(
+        canvas: Canvas,
+        cx: Float,
+        cy: Float,
+        shader: BitmapShader?
+    ) {
         if (shader != null) {
             reticlePaint.shader = shader
             fillPaint.shader = shader
