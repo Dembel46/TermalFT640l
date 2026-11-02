@@ -5,6 +5,12 @@ import android.graphics.PointF
 import android.graphics.RectF
 import kotlin.math.abs
 
+enum class TargetType {
+    MOVING,         // Движущийся объект (Красный)
+    HUMAN_VEHICLE,  // Человек, техника или крупный тепловой объект (Бледно-желтый)
+    OTHER           // Иные неподвижные тепловые объекты (Бледно-зеленый)
+}
+
 data class DetectedTarget(
     val id: Int,
     val bounds: RectF,
@@ -12,8 +18,7 @@ data class DetectedTarget(
     val widthPx: Int,
     val heightPx: Int,
     val contrastScore: Float,
-    val isMoving: Boolean,
-    val isThermalSource: Boolean
+    val type: TargetType
 )
 
 class ThermalVisionEngine {
@@ -43,7 +48,7 @@ class ThermalVisionEngine {
         var holdCounter: Int
     )
 
-    fun processFrame(frameBitmap: Bitmap, isThermal: Boolean): List<DetectedTarget> {
+    fun processFrame(frameBitmap: Bitmap): List<DetectedTarget> {
         val scaled = if (frameBitmap.width == procW && frameBitmap.height == procH) {
             frameBitmap
         } else {
@@ -69,7 +74,7 @@ class ThermalVisionEngine {
 
         val avgSceneLuma = (sumLuma / totalPixels).toInt()
 
-        // 1. Вычитание фона Top-Hat (ядро 7x7)
+        // 1. Top-Hat морфология (ядро 7x7)
         val kRadius = 3
         val eroded = IntArray(totalPixels)
         for (y in kRadius until procH - kRadius) {
@@ -102,15 +107,15 @@ class ThermalVisionEngine {
             }
         }
 
-        val minDiff = 25
+        val minDiff = 26
         for (i in 0 until totalPixels) {
             val localDiff = currentLuma[i] - openedLuma[i]
-            val isHighContrast = localDiff >= minDiff && currentLuma[i] > (avgSceneLuma + 15)
+            val isHighContrast = localDiff >= minDiff && currentLuma[i] > (avgSceneLuma + 16)
             candidateMask[i] = isHighContrast
             visited[i] = false
         }
 
-        // 2. Кластеризация контуров (BFS)
+        // 2. Кластеризация контуров
         val rawBlobs = mutableListOf<RawBlob>()
         val queueX = IntArray(2048)
         val queueY = IntArray(2048)
@@ -196,14 +201,14 @@ class ThermalVisionEngine {
                     }
 
                     if (count in 3..2500) {
-                        rawBlobs.add(RawBlob(minX, minY, maxX, maxY, maxL, silhouette))
+                        rawBlobs.add(RawBlob(minX, minY, maxX, maxY, maxL, count, silhouette))
                     }
                 }
             }
         }
 
-        // 3. Анализ движения
-        val movingTargets = mutableListOf<DetectedTarget>()
+        // 3. Анализ движения с надежным фильтром аналогового шума тепловизора
+        val finalTargets = mutableListOf<DetectedTarget>()
         val activeIds = mutableSetOf<Int>()
 
         for (blob in rawBlobs) {
@@ -212,107 +217,115 @@ class ThermalVisionEngine {
                 for (by in blob.minY..blob.maxY) {
                     val r = by * procW
                     for (bx in blob.minX..blob.maxX) {
+                        // Порог разницы увеличен до 22 для отсечения шума матрицы
                         val d = abs(currentLuma[r + bx] - prevLuma[r + bx])
-                        if (d > 16) motionPixels++
+                        if (d > 22) motionPixels++
                     }
                 }
             }
 
-            val isMoving = motionPixels >= 2
+            val bw = blob.maxX - blob.minX + 1
+            val bh = blob.maxY - blob.minY + 1
+            val contrast = (blob.maxLuma - avgSceneLuma).toFloat()
 
-            if (isMoving) {
-                val bw = blob.maxX - blob.minX + 1
-                val bh = blob.maxY - blob.minY + 1
-                val contrast = (blob.maxLuma - avgSceneLuma).toFloat()
+            val rawBounds = RectF(
+                blob.minX.toFloat() / procW,
+                blob.minY.toFloat() / procH,
+                blob.maxX.toFloat() / procW,
+                blob.maxY.toFloat() / procH
+            )
 
-                val rawBounds = RectF(
-                    blob.minX.toFloat() / procW,
-                    blob.minY.toFloat() / procH,
-                    blob.maxX.toFloat() / procW,
-                    blob.maxY.toFloat() / procH
-                )
-
-                // Поиск соответствия с предыдущим кадром
-                var assignedId = -1
-                var bestDist = 0.12f
-                for ((id, hist) in targetHistory) {
-                    val dx = abs(hist.smoothedBounds.centerX() - rawBounds.centerX())
-                    val dy = abs(hist.smoothedBounds.centerY() - rawBounds.centerY())
-                    val dist = dx + dy
-                    if (dist < bestDist) {
-                        bestDist = dist
-                        assignedId = id
-                    }
+            var assignedId = -1
+            var bestDist = 0.12f
+            for ((id, hist) in targetHistory) {
+                val dx = abs(hist.smoothedBounds.centerX() - rawBounds.centerX())
+                val dy = abs(hist.smoothedBounds.centerY() - rawBounds.centerY())
+                val dist = dx + dy
+                if (dist < bestDist) {
+                    bestDist = dist
+                    assignedId = id
                 }
+            }
 
-                if (assignedId == -1) {
-                    assignedId = nextTargetId++
-                }
-                activeIds.add(assignedId)
+            if (assignedId == -1) {
+                assignedId = nextTargetId++
+            }
+            activeIds.add(assignedId)
 
-                // Инерционное сглаживание рамок и контура (устраняет дергание)
-                val hist = targetHistory[assignedId]
-                val finalBounds: RectF
-                val finalSilhouette: List<PointF>
+            val hist = targetHistory[assignedId]
+            val finalBounds: RectF
+            val finalSilhouette: List<PointF>
+            var centroidShift = 0f
 
-                if (hist != null) {
-                    // Плавное следование за целью (EMA 70/30)
-                    hist.smoothedBounds.left += (rawBounds.left - hist.smoothedBounds.left) * 0.35f
-                    hist.smoothedBounds.top += (rawBounds.top - hist.smoothedBounds.top) * 0.35f
-                    hist.smoothedBounds.right += (rawBounds.right - hist.smoothedBounds.right) * 0.35f
-                    hist.smoothedBounds.bottom += (rawBounds.bottom - hist.smoothedBounds.bottom) * 0.35f
-                    finalBounds = RectF(hist.smoothedBounds)
+            if (hist != null) {
+                hist.smoothedBounds.left += (rawBounds.left - hist.smoothedBounds.left) * 0.35f
+                hist.smoothedBounds.top += (rawBounds.top - hist.smoothedBounds.top) * 0.35f
+                hist.smoothedBounds.right += (rawBounds.right - hist.smoothedBounds.right) * 0.35f
+                hist.smoothedBounds.bottom += (rawBounds.bottom - hist.smoothedBounds.bottom) * 0.35f
+                finalBounds = RectF(hist.smoothedBounds)
 
-                    val curCentroidX = finalBounds.centerX()
-                    val curCentroidY = finalBounds.centerY()
-                    val dx = curCentroidX - hist.lastCentroidX
-                    val dy = curCentroidY - hist.lastCentroidY
-                    hist.lastCentroidX = curCentroidX
-                    hist.lastCentroidY = curCentroidY
+                val curCentroidX = finalBounds.centerX()
+                val curCentroidY = finalBounds.centerY()
+                val dx = curCentroidX - hist.lastCentroidX
+                val dy = curCentroidY - hist.lastCentroidY
+                centroidShift = abs(dx) + abs(dy)
+                hist.lastCentroidX = curCentroidX
+                hist.lastCentroidY = curCentroidY
 
-                    // Контур обновляется с задержкой (раз в 4 кадра ~350 мс), а между ними плавно сдвигается за объектом
-                    hist.holdCounter++
-                    if (hist.holdCounter >= 4 || hist.smoothedSilhouette.isEmpty()) {
-                        hist.holdCounter = 0
-                        hist.smoothedSilhouette = blob.silhouettePoints
-                    } else {
-                        hist.smoothedSilhouette = hist.smoothedSilhouette.map { PointF(it.x + dx, it.y + dy) }
-                    }
-                    finalSilhouette = hist.smoothedSilhouette
+                hist.holdCounter++
+                if (hist.holdCounter >= 4 || hist.smoothedSilhouette.isEmpty()) {
+                    hist.holdCounter = 0
+                    hist.smoothedSilhouette = blob.silhouettePoints
                 } else {
-                    finalBounds = RectF(rawBounds)
-                    finalSilhouette = blob.silhouettePoints
-                    targetHistory[assignedId] = TrackedHistory(
-                        RectF(rawBounds),
-                        blob.silhouettePoints,
-                        rawBounds.centerX(),
-                        rawBounds.centerY(),
-                        0
-                    )
+                    hist.smoothedSilhouette = hist.smoothedSilhouette.map { PointF(it.x + dx, it.y + dy) }
                 }
-
-                movingTargets.add(
-                    DetectedTarget(
-                        id = assignedId,
-                        bounds = finalBounds,
-                        silhouettePoints = finalSilhouette,
-                        widthPx = bw,
-                        heightPx = bh,
-                        contrastScore = contrast,
-                        isMoving = true,
-                        isThermalSource = isThermal
-                    )
+                finalSilhouette = hist.smoothedSilhouette
+            } else {
+                finalBounds = RectF(rawBounds)
+                finalSilhouette = blob.silhouettePoints
+                targetHistory[assignedId] = TrackedHistory(
+                    RectF(rawBounds),
+                    blob.silhouettePoints,
+                    rawBounds.centerX(),
+                    rawBounds.centerY(),
+                    0
                 )
             }
+
+            // АНТИШУМ: Движение подтверждается только при существенном изменении площади или переносе центра
+            val isPixelMoving = motionPixels >= 8 && (motionPixels.toFloat() / blob.pixelCount) >= 0.18f
+            val isCentroidMoving = centroidShift > 0.007f
+            val isMoving = isPixelMoving || isCentroidMoving
+
+            // КЛАССИФИКАЦИЯ ОБЪЕКТА
+            val targetType = when {
+                isMoving -> TargetType.MOVING // Красный
+                // Человек (вытянутый по вертикали) или автомобиль (широкий по горизонтали) или крупная цель
+                (bh >= bw * 1.25f && bh >= 10) || (bw >= bh * 1.3f && bw >= 12) || blob.pixelCount >= 35 ->
+                    TargetType.HUMAN_VEHICLE // Бледно-желтый
+                else ->
+                    TargetType.OTHER // Бледно-зеленый
+            }
+
+            finalTargets.add(
+                DetectedTarget(
+                    id = assignedId,
+                    bounds = finalBounds,
+                    silhouettePoints = finalSilhouette,
+                    widthPx = bw,
+                    heightPx = bh,
+                    contrastScore = contrast,
+                    type = targetType
+                )
+            )
         }
 
-        // Очистка старых потерянных целей
         targetHistory.keys.retainAll(activeIds)
 
         System.arraycopy(currentLuma, 0, prevLuma, 0, totalPixels)
         hasPrevFrame = true
 
-        return movingTargets.sortedByDescending { it.contrastScore }.take(3)
+        return finalTargets.sortedByDescending { it.contrastScore }.take(4)
     }
 
     private data class RawBlob(
@@ -321,6 +334,7 @@ class ThermalVisionEngine {
         val maxX: Int,
         val maxY: Int,
         val maxLuma: Int,
+        val pixelCount: Int,
         val silhouettePoints: List<PointF>
     )
 }
