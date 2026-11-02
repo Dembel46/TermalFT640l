@@ -8,20 +8,18 @@ import kotlin.math.min
 
 data class DetectedTarget(
     val id: Int,
-    val bounds: RectF,
-    val maxLuma: Int,
-    val estimatedTemp: Float,
-    val isMoving: Boolean
+    val bounds: RectF,          // Координаты рамки 0.0..1.0
+    val maxLuma: Int,           // Яркость 0..255
+    val estimatedTemp: Float,   // Температура в °C
+    val isMoving: Boolean,      // Движение
+    val isThermalSource: Boolean // Источник: true - тепловизор, false - оптика
 )
 
 class ThermalVisionEngine {
 
-    // Формула температуры: T = tempSlope * Luma + tempOffset
     var tempSlope: Float = 0.392f
     var tempOffset: Float = -10.0f
-
-    // Порог контраста (снижен до 20 для уверенного захвата теплых целей)
-    var contrastThreshold: Int = 20
+    var contrastThreshold: Int = 18
 
     private val procW = 160
     private val procH = 120
@@ -30,7 +28,7 @@ class ThermalVisionEngine {
     private val currentLuma = IntArray(totalPixels)
     private val prevLuma = IntArray(totalPixels)
     private val openedLuma = IntArray(totalPixels)
-    private val topHatMask = BooleanArray(totalPixels)
+    private val candidateMask = BooleanArray(totalPixels)
     private val visited = BooleanArray(totalPixels)
 
     private var nextTargetId = 1
@@ -48,7 +46,7 @@ class ThermalVisionEngine {
         return tempSlope * luma + tempOffset
     }
 
-    fun processFrame(frameBitmap: Bitmap): List<DetectedTarget> {
+    fun processFrame(frameBitmap: Bitmap, isThermal: Boolean): List<DetectedTarget> {
         val scaled = if (frameBitmap.width == procW && frameBitmap.height == procH) {
             frameBitmap
         } else {
@@ -61,17 +59,22 @@ class ThermalVisionEngine {
             scaled.recycle()
         }
 
-        // 1. Извлечение Luma
+        var sumLuma = 0L
         for (i in 0 until totalPixels) {
             val p = pixels[i]
             val r = (p shr 16) and 0xFF
             val g = (p shr 8) and 0xFF
             val b = p and 0xFF
-            currentLuma[i] = (r * 77 + g * 150 + b * 29) shr 8
+            val l = (r * 77 + g * 150 + b * 29) shr 8
+            currentLuma[i] = l
+            sumLuma += l
         }
 
-        // 2. Морфология Top-Hat (эрозия + дилатация)
-        val kRadius = 2
+        val avgSceneLuma = (sumLuma / totalPixels).toInt()
+        val absoluteHotThreshold = max(135, avgSceneLuma + 35)
+
+        // 2. Морфология Top-Hat (ядро 7x7)
+        val kRadius = 3
         val eroded = IntArray(totalPixels)
         for (y in kRadius until procH - kRadius) {
             val row = y * procW
@@ -103,14 +106,17 @@ class ThermalVisionEngine {
             }
         }
 
-        // 3. Вычитание фона
+        // 3. Гибридная маска: контрастные цели Top-Hat ИЛИ выраженные яркие/тепловые пятна
         for (i in 0 until totalPixels) {
-            val diff = currentLuma[i] - openedLuma[i]
-            topHatMask[i] = diff > contrastThreshold
+            val localDiff = currentLuma[i] - openedLuma[i]
+            val isTopHatHot = localDiff > contrastThreshold
+            val isAbsoluteHot = currentLuma[i] >= absoluteHotThreshold
+
+            candidateMask[i] = isTopHatHot || isAbsoluteHot
             visited[i] = false
         }
 
-        // 4. Поиск связных областей
+        // 4. Поиск связанных контуров (BFS)
         val rawBlobs = mutableListOf<RawBlob>()
         val queueX = IntArray(2048)
         val queueY = IntArray(2048)
@@ -119,7 +125,7 @@ class ThermalVisionEngine {
             val row = y * procW
             for (x in 2 until procW - 2) {
                 val idx = row + x
-                if (topHatMask[idx] && !visited[idx]) {
+                if (candidateMask[idx] && !visited[idx]) {
                     var head = 0
                     var tail = 0
                     queueX[tail] = x
@@ -132,13 +138,11 @@ class ThermalVisionEngine {
                     var minY = y
                     var maxY = y
                     var maxL = currentLuma[idx]
-                    var pixelCount = 0
+                    var count = 0
 
                     while (head < tail && tail < 2040) {
-                        val qx = queueX[head]
-                        val qy = queueY[head]
-                        head++
-                        pixelCount++
+                        val qx = queueX[head++]
+                        count++
 
                         minX = min(minX, qx)
                         maxX = max(maxX, qx)
@@ -153,7 +157,7 @@ class ThermalVisionEngine {
                             val ny = nb.second
                             if (nx in 0 until procW && ny in 0 until procH) {
                                 val nIdx = ny * procW + nx
-                                if (topHatMask[nIdx] && !visited[nIdx]) {
+                                if (candidateMask[nIdx] && !visited[nIdx]) {
                                     visited[nIdx] = true
                                     queueX[tail] = nx
                                     queueY[tail] = ny
@@ -163,8 +167,8 @@ class ThermalVisionEngine {
                         }
                     }
 
-                    // Отсекаем только одиночный микро-шум (меньше 2 пикселей)
-                    if (pixelCount in 2..1500) {
+                    // Фильтрация размеров цели (от точечной до средней)
+                    if (count in 3..2500) {
                         rawBlobs.add(RawBlob(minX, minY, maxX, maxY, maxL))
                     }
                 }
@@ -211,7 +215,8 @@ class ThermalVisionEngine {
                     bounds = normRect,
                     maxLuma = blob.maxLuma,
                     estimatedTemp = temp,
-                    isMoving = isMoving
+                    isMoving = isMoving,
+                    isThermalSource = isThermal
                 )
             )
         }
