@@ -479,21 +479,4 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onDetach(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Плата захвата извлечена" }
-                }
-
-                override fun onCancel(device: UsbDevice) {
-                    runOnUiThread { tvStatus.text = "Подключение отменено" }
-                }
-            })
-        }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        isVisionRunning = false
-        visionThread.quitSafely()
-        alertManager.release()
-        cameraHelper?.release()
-    }
-}
+                    runOnUiThread { tvStatus.text = "Плата захвата и
