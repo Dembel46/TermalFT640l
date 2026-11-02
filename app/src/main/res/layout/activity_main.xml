@@ -7,30 +7,31 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Контейнер камер на LinearLayout (100% защита от вылетов при смене пропорций) -->
+    <!-- Контейнер камер с аппаратным центрированием (без искажений пропорций 4:3) -->
     <LinearLayout
         android:id="@+id/cameraContainer"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:gravity="center"
         android:orientation="horizontal"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
-        <!-- 1. Тепловизор FT640L -->
+        <!-- 1. Тепловизор FT640L (4:3) -->
         <com.serenegiant.widget.AspectRatioSurfaceView
             android:id="@+id/svUvcCamera"
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="1" />
+            android:layout_weight="0.7" />
 
         <!-- 2. Штатная камера телефона -->
         <androidx.camera.view.PreviewView
             android:id="@+id/pvPhoneCamera"
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="1" />
+            android:layout_weight="0.3" />
     </LinearLayout>
 
     <!-- Кнопка "Во весь экран" на окне тепловизора -->
@@ -49,7 +50,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Слой прицела и рамок машинного зрения -->
+    <!-- Слой прицела и рамок трекера -->
     <com.example.thermalcapture.CrosshairView
         android:id="@+id/crosshairOverlay"
         android:layout_width="match_parent"
@@ -99,7 +100,7 @@
             android:layout_height="36dp"
             android:layout_marginEnd="4dp"
             android:backgroundTint="#2E7D32"
-            android:text="640x512"
+            android:text="4:3"
             android:textColor="#FFFFFF"
             android:textSize="10sp" />
 
@@ -129,7 +130,7 @@
             android:layout_height="36dp"
             android:layout_marginEnd="4dp"
             android:backgroundTint="#444444"
-            android:text="ТЯНИ"
+            android:text="ЮСТИРОВКА"
             android:textColor="#FFFFFF"
             android:textSize="10sp" />
 
@@ -138,7 +139,7 @@
             android:layout_width="wrap_content"
             android:layout_height="36dp"
             android:backgroundTint="#444444"
-            android:text="50/50"
+            android:text="70/30"
             android:textColor="#FFFFFF"
             android:textSize="10sp" />
     </LinearLayout>
