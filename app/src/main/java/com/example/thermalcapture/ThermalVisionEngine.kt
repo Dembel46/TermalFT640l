@@ -7,7 +7,7 @@ import kotlin.math.abs
 
 enum class TargetType {
     MOVING,         // Движущийся объект (Красный)
-    HUMAN_VEHICLE,  // Человек, техника или крупный тепловой объект (Бледно-желтый)
+    HUMAN_VEHICLE,  // Человек, техника или крупный объект (Бледно-желтый)
     OTHER           // Иные неподвижные тепловые объекты (Бледно-зеленый)
 }
 
@@ -27,7 +27,8 @@ class ThermalVisionEngine {
     private val procH = 120
     private val totalPixels = procW * procH
 
-    private val currentLuma = IntArray(totalPixels)
+    private val rawLuma = IntArray(totalPixels)
+    private val filteredLuma = IntArray(totalPixels)
     private val prevLuma = IntArray(totalPixels)
     private val openedLuma = IntArray(totalPixels)
     private val candidateMask = BooleanArray(totalPixels)
@@ -61,20 +62,36 @@ class ThermalVisionEngine {
             scaled.recycle()
         }
 
-        var sumLuma = 0L
+        // 1. Извлечение первичной яркости Luma
         for (i in 0 until totalPixels) {
             val p = pixels[i]
             val r = (p shr 16) and 0xFF
             val g = (p shr 8) and 0xFF
             val b = p and 0xFF
-            val l = (r * 77 + g * 150 + b * 29) shr 8
-            currentLuma[i] = l
-            sumLuma += l
+            rawLuma[i] = (r * 77 + g * 150 + b * 29) shr 8
+        }
+
+        // 2. АНТИШУМОВОЙ ФИЛЬТР 3х3 (подавление аналогового шума CVBS тепловизора)
+        var sumLuma = 0L
+        for (y in 0 until procH) {
+            val row = y * procW
+            for (x in 0 until procW) {
+                val idx = row + x
+                val smooth = if (x in 1 until procW - 1 && y in 1 until procH - 1) {
+                    (rawLuma[idx] * 4 +
+                     rawLuma[idx - 1] + rawLuma[idx + 1] +
+                     rawLuma[idx - procW] + rawLuma[idx + procW]) / 8
+                } else {
+                    rawLuma[idx]
+                }
+                filteredLuma[idx] = smooth
+                sumLuma += smooth
+            }
         }
 
         val avgSceneLuma = (sumLuma / totalPixels).toInt()
 
-        // 1. Top-Hat морфология (ядро 7x7)
+        // 3. Top-Hat морфология (ядро 7x7)
         val kRadius = 3
         val eroded = IntArray(totalPixels)
         for (y in kRadius until procH - kRadius) {
@@ -84,7 +101,7 @@ class ThermalVisionEngine {
                 for (dy in -kRadius..kRadius) {
                     val kRow = (y + dy) * procW
                     for (dx in -kRadius..kRadius) {
-                        val v = currentLuma[kRow + x + dx]
+                        val v = filteredLuma[kRow + x + dx]
                         if (v < minVal) minVal = v
                     }
                 }
@@ -107,15 +124,15 @@ class ThermalVisionEngine {
             }
         }
 
-        val minDiff = 26
+        val minDiff = 24
         for (i in 0 until totalPixels) {
-            val localDiff = currentLuma[i] - openedLuma[i]
-            val isHighContrast = localDiff >= minDiff && currentLuma[i] > (avgSceneLuma + 16)
+            val localDiff = filteredLuma[i] - openedLuma[i]
+            val isHighContrast = localDiff >= minDiff && filteredLuma[i] > (avgSceneLuma + 14)
             candidateMask[i] = isHighContrast
             visited[i] = false
         }
 
-        // 2. Поиск связных областей
+        // 4. Кластеризация контуров (BFS)
         val rawBlobs = mutableListOf<RawBlob>()
         val queueX = IntArray(2048)
         val queueY = IntArray(2048)
@@ -136,7 +153,7 @@ class ThermalVisionEngine {
                     var maxX = x
                     var minY = y
                     var maxY = y
-                    var maxL = currentLuma[idx]
+                    var maxL = filteredLuma[idx]
                     var count = 0
 
                     for (r in 0 until procH) {
@@ -172,7 +189,7 @@ class ThermalVisionEngine {
                         if (qx < rowMinX[qy]) rowMinX[qy] = qx
                         if (qx > rowMaxX[qy]) rowMaxX[qy] = qx
 
-                        val l = currentLuma[qy * procW + qx]
+                        val l = filteredLuma[qy * procW + qx]
                         if (l > maxL) maxL = l
 
                         checkAndPush(qx + 1, qy)
@@ -181,8 +198,10 @@ class ThermalVisionEngine {
                         checkAndPush(qx, qy - 1)
                     }
 
-                    // Построение замкнутого силуэтного контура по граням
                     val silhouette = mutableListOf<PointF>()
+                    val bw = maxX - minX + 1
+                    val bh = maxY - minY + 1
+
                     for (ry in minY..maxY) {
                         val rx = rowMaxX[ry]
                         if (rx >= 0) {
@@ -196,17 +215,14 @@ class ThermalVisionEngine {
                         }
                     }
 
-                    val bw = maxX - minX + 1
-                    val bh = maxY - minY + 1
-
-                    if (count in 3..2500) {
+                    if (count in 4..2500) {
                         rawBlobs.add(RawBlob(minX, minY, maxX, maxY, maxL, count, silhouette))
                     }
                 }
             }
         }
 
-        // 3. Анализ движения и классификация
+        // 5. Детекция движения с защитой от теплового шума
         val finalTargets = mutableListOf<DetectedTarget>()
         val activeIds = mutableSetOf<Int>()
 
@@ -216,8 +232,8 @@ class ThermalVisionEngine {
                 for (by in blob.minY..blob.maxY) {
                     val r = by * procW
                     for (bx in blob.minX..blob.maxX) {
-                        val d = abs(currentLuma[r + bx] - prevLuma[r + bx])
-                        if (d > 22) motionPixels++
+                        val d = abs(filteredLuma[r + bx] - prevLuma[r + bx])
+                        if (d > 24) motionPixels++
                     }
                 }
             }
@@ -290,13 +306,14 @@ class ThermalVisionEngine {
                 )
             }
 
-            val isPixelMoving = motionPixels >= 8 && (motionPixels.toFloat() / blob.pixelCount) >= 0.18f
-            val isCentroidMoving = centroidShift > 0.007f
+            // Устранение ложного движения: требуются либо перемещение центра, либо значимый сдвиг группы пикселей
+            val isPixelMoving = motionPixels >= 10 && (motionPixels.toFloat() / blob.pixelCount) >= 0.22f
+            val isCentroidMoving = centroidShift > 0.008f
             val isMoving = isPixelMoving || isCentroidMoving
 
             val targetType = when {
                 isMoving -> TargetType.MOVING
-                (bh >= bw * 1.25f && bh >= 10) || (bw >= bh * 1.3f && bw >= 12) || blob.pixelCount >= 35 ->
+                (bh >= bw * 1.25f && bh >= 9) || (bw >= bh * 1.3f && bw >= 11) || blob.pixelCount >= 30 ->
                     TargetType.HUMAN_VEHICLE
                 else ->
                     TargetType.OTHER
@@ -317,7 +334,7 @@ class ThermalVisionEngine {
 
         targetHistory.keys.retainAll(activeIds)
 
-        System.arraycopy(currentLuma, 0, prevLuma, 0, totalPixels)
+        System.arraycopy(filteredLuma, 0, prevLuma, 0, totalPixels)
         hasPrevFrame = true
 
         return finalTargets.sortedByDescending { it.contrastScore }.take(4)
