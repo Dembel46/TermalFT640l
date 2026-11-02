@@ -35,6 +35,7 @@ import com.serenegiant.widget.AspectRatioSurfaceView
 class MainActivity : AppCompatActivity() {
 
     private lateinit var rootLayout: ConstraintLayout
+    private lateinit var cameraContainer: LinearLayout
     private lateinit var cameraView: AspectRatioSurfaceView
     private lateinit var phoneCameraView: PreviewView
     private lateinit var crosshairOverlay: CrosshairView
@@ -61,14 +62,15 @@ class MainActivity : AppCompatActivity() {
     private var isTrackingEnabled = true
     private var isThermalStreaming = false
 
-    private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 256, Bitmap.Config.ARGB_8888)
+    private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
 
-    // Режимы экрана: 0 - 70/30 (по умолчанию), 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
+    // Режимы: 0 - 70/30 (по умолчанию), 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
     private var displayMode = 0
     private var isThermalFullscreen = false
 
-    private var thermalWidth = 640
-    private var thermalHeight = 512
+    // Стандартное недеформированное соотношение аналогового CVBS
+    private var thermalAspectW = 4
+    private var thermalAspectH = 3
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,6 +78,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         rootLayout = findViewById(R.id.rootLayout)
+        cameraContainer = findViewById(R.id.cameraContainer)
         cameraView = findViewById(R.id.svUvcCamera)
         phoneCameraView = findViewById(R.id.pvPhoneCamera)
         crosshairOverlay = findViewById(R.id.crosshairOverlay)
@@ -98,23 +101,23 @@ class MainActivity : AppCompatActivity() {
 
         alertManager = AlertManager(this)
 
-        initThermalResolution(640, 512)
+        initThermalResolution(4, 3)
         initVisionPipeline()
         initViews()
         initButtons()
         checkPermissionsAndInit()
 
-        // По умолчанию режим 70/30
+        // По умолчанию 70/30
         rootLayout.post {
             setSplitRatio(0.7f, 0.3f, "70/30")
         }
     }
 
     private fun initThermalResolution(w: Int, h: Int) {
-        thermalWidth = w
-        thermalHeight = h
-        cameraView.setAspectRatio(thermalWidth, thermalHeight)
-        btnResolution.text = "" + w + "x" + h
+        thermalAspectW = w
+        thermalAspectH = h
+        cameraView.setAspectRatio(thermalAspectW, thermalAspectH)
+        btnResolution.text = "" + w + ":" + h
     }
 
     private fun initVisionPipeline() {
@@ -142,12 +145,6 @@ class MainActivity : AppCompatActivity() {
                             }, mainHandler)
                         } catch (e: Exception) {
                             isProcessingFrame = false
-                        }
-                    } else {
-                        // Пока плата захвата не подключена — анализируем штатную камеру
-                        val opticalBmp = phoneCameraView.bitmap
-                        if (opticalBmp != null) {
-                            dispatchFrameToVision(opticalBmp)
                         }
                     }
                 }
@@ -259,7 +256,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Кнопка "Во весь экран" на окне тепловизора
+        // Кнопка "Во весь экран"
         btnThermalFullscreen.setOnClickListener {
             if (!isThermalFullscreen) {
                 isThermalFullscreen = true
@@ -293,21 +290,20 @@ class MainActivity : AppCompatActivity() {
         btnCalibrate.setOnClickListener {
             crosshairOverlay.isCalibrationMode = !crosshairOverlay.isCalibrationMode
             if (crosshairOverlay.isCalibrationMode) {
-                btnCalibrate.text = "ЮСТИРОВКА: ВКЛ"
-                btnCalibrate.setBackgroundColor(0xFFCC0000.toInt()) // Красный при активной юстировке
-                Toast.makeText(this, "Перемещайте оптический прицел пальцем", Toast.LENGTH_SHORT).show()
+                btnCalibrate.text = "СОХРАНИТЬ"
+                btnCalibrate.setBackgroundColor(0xFFCC0000.toInt())
             } else {
                 btnCalibrate.text = "ЮСТИРОВКА"
                 btnCalibrate.setBackgroundColor(0xFF444444.toInt())
 
-                // Запоминаем позицию в память телефона
+                // Сохранение в память
                 val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
                 prefs.edit()
                     .putFloat("opticalOffsetX", crosshairOverlay.opticalOffsetX)
                     .putFloat("opticalOffsetY", crosshairOverlay.opticalOffsetY)
                     .apply()
 
-                Toast.makeText(this, "Позиция прицела сохранена", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Позиция юстировки сохранена", Toast.LENGTH_SHORT).show()
             }
             crosshairOverlay.invalidate()
         }
@@ -353,34 +349,24 @@ class MainActivity : AppCompatActivity() {
 
         btnMode.text = modeLabel
 
-        // Для честного 100% полного экрана подстраиваем пропорцию под дисплей
-        if (weightThermal == 1.0f && weightOptical == 0.0f) {
-            val screenW = rootLayout.width.takeIf { it > 0 } ?: 1920
-            val screenH = rootLayout.height.takeIf { it > 0 } ?: 1080
-            cameraView.setAspectRatio(screenW, screenH)
-        } else {
-            cameraView.setAspectRatio(thermalWidth, thermalHeight)
-        }
-
+        cameraContainer.requestLayout()
         rootLayout.post { updateOverlayBounds() }
     }
 
     private fun showResolutionDialog() {
         val resolutions = arrayOf(
-            "640 x 512 (FT640L Native)",
-            "720 x 576 (PAL CVBS)",
-            "720 x 480 (NTSC CVBS)",
-            "640 x 480 (VGA 4:3)"
+            "4 : 3 (Стандарт аналогового видео)",
+            "5 : 4 (640 x 512 FT640L)",
+            "16 : 9 (Широкоформатный)"
         )
         val sizes = arrayOf(
-            Pair(640, 512),
-            Pair(720, 576),
-            Pair(720, 480),
-            Pair(640, 480)
+            Pair(4, 3),
+            Pair(5, 4),
+            Pair(16, 9)
         )
 
         AlertDialog.Builder(this)
-            .setTitle("Разрешение тепловизора:")
+            .setTitle("Пропорции тепловизора:")
             .setItems(resolutions) { _, which ->
                 val chosen = sizes[which]
                 initThermalResolution(chosen.first, chosen.second)
@@ -423,7 +409,7 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onCameraOpen(device: UsbDevice) {
                     isThermalStreaming = true
-                    runOnUiThread { tvStatus.text = "FT640L (" + thermalWidth + "x" + thermalHeight + "): Поток активен" }
+                    runOnUiThread { tvStatus.text = "FT640L: Поток активен" }
                     startPreview()
                     cameraView.holder.surface?.let { surface ->
                         if (surface.isValid) {
