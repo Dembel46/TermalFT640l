@@ -7,7 +7,7 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Горизонтальный контейнер с изоляцией окон -->
+    <!-- Изолированный контейнер камер (исключает перекрытие окон) -->
     <LinearLayout
         android:id="@+id/cameraContainer"
         android:layout_width="match_parent"
@@ -19,32 +19,28 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
-        <!-- 1. Изолированный контейнер тепловизора (70% по умолчанию) -->
+        <!-- 1. Изолированный слот тепловизора (70% по умолчанию) -->
         <FrameLayout
             android:id="@+id/thermalContainer"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="0.7"
-            android:background="#000000"
-            android:clipChildren="true"
-            android:clipToPadding="true">
+            android:background="#000000">
 
             <com.serenegiant.widget.AspectRatioSurfaceView
                 android:id="@+id/svUvcCamera"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
                 android:layout_gravity="center" />
         </FrameLayout>
 
-        <!-- 2. Изолированный контейнер оптики (30% по умолчанию) -->
+        <!-- 2. Изолированный слот оптики (30% по умолчанию) -->
         <FrameLayout
             android:id="@+id/opticalContainer"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="0.3"
-            android:background="#000000"
-            android:clipChildren="true"
-            android:clipToPadding="true">
+            android:background="#000000">
 
             <androidx.camera.view.PreviewView
                 android:id="@+id/pvPhoneCamera"
