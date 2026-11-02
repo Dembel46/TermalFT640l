@@ -15,8 +15,6 @@ import android.view.SurfaceHolder
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -44,7 +42,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnCalibrate: Button
     private lateinit var btnSound: Button
     private lateinit var btnFlash: Button
-    private lateinit var btnCalibTemp: Button
     private lateinit var btnResolution: Button
 
     private var cameraHelper: ICameraHelper? = null
@@ -59,10 +56,11 @@ class MainActivity : AppCompatActivity() {
     private var isProcessingFrame = false
 
     private var isThermalStreaming = false
-    private var forceAnalysisSource = 0
+    private var forceAnalysisSource = 0 // 0 - Авто, 1 - Оптика, 2 - Тепло
 
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 256, Bitmap.Config.ARGB_8888)
 
+    // Режимы экрана: 0 - 50/50, 1 - 70/30, 2 - 30/70, 3 - PiP, 4 - Тепло 100%, 5 - Оптика 100%
     private var displayMode = 0
     private var thermalWidth = 640
     private var thermalHeight = 512
@@ -81,7 +79,6 @@ class MainActivity : AppCompatActivity() {
         btnCalibrate = findViewById(R.id.btnCalibrate)
         btnSound = findViewById(R.id.btnSound)
         btnFlash = findViewById(R.id.btnFlash)
-        btnCalibTemp = findViewById(R.id.btnCalibTemp)
         btnResolution = findViewById(R.id.btnResolution)
 
         crosshairOverlay.phoneCameraView = phoneCameraView
@@ -167,12 +164,11 @@ class MainActivity : AppCompatActivity() {
                     crosshairOverlay.invalidate()
 
                     if (targets.isNotEmpty()) {
-                        val maxTarget = targets.maxByOrNull { it.maxLuma }
-                        val tempVal = maxTarget?.estimatedTemp ?: 0f
-                        val sign = if (tempVal >= 0) "+" else ""
-                        tvStatus.text = "Целей: " + targets.size + " | Пик: " + sign + String.format("%.1f", tempVal) + "C | " + sourceName
+                        val maxTarget = targets.maxByOrNull { it.contrastScore }
+                        val score = maxTarget?.contrastScore?.toInt() ?: 0
+                        tvStatus.text = "Движущихся целей: " + targets.size + " (Контраст: " + score + ") [" + sourceName + "]"
                     } else {
-                        tvStatus.text = "Поиск целей: АКТИВЕН [" + sourceName + "]"
+                        tvStatus.text = "Поиск движущихся целей: АКТИВЕН [" + sourceName + "]"
                     }
                 }
             } catch (e: Exception) {
@@ -280,10 +276,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        btnCalibTemp.setOnClickListener {
-            showTemperatureCalibrationDialog()
-        }
-
         tvStatus.setOnClickListener {
             forceAnalysisSource = (forceAnalysisSource + 1) % 3
             val name = when (forceAnalysisSource) {
@@ -320,95 +312,55 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showTemperatureCalibrationDialog() {
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(50, 40, 50, 10)
-        }
-
-        val etTemp1 = EditText(this).apply {
-            hint = "Темп. холодной точки (C) [напр: 0]"
-            setText("0")
-        }
-        val etTemp2 = EditText(this).apply {
-            hint = "Темп. горячей точки (C) [напр: 60]"
-            setText("60")
-        }
-
-        layout.addView(etTemp1)
-        layout.addView(etTemp2)
-
-        AlertDialog.Builder(this)
-            .setTitle("Калибровка температуры")
-            .setMessage("Введите температуры двух опорных объектов:")
-            .setView(layout)
-            .setPositiveButton("Применить") { _, _ ->
-                val t1 = etTemp1.text.toString().toFloatOrNull() ?: 0f
-                val t2 = etTemp2.text.toString().toFloatOrNull() ?: 60f
-                visionEngine.calibrate(30, t1, 220, t2)
-                Toast.makeText(this, "Шкала откалибрована", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Отмена", null)
-            .show()
-    }
-
     private fun applyDisplayMode(mode: Int) {
         val set = ConstraintSet()
         set.clone(rootLayout)
 
         when (mode) {
-            0 -> {
+            0 -> { // 50 / 50
                 btnMode.text = "50/50"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
+                set.setGuidelinePercent(R.id.splitGuideline, 0.5f)
 
-                set.constrainPercentWidth(R.id.svUvcCamera, 0.5f)
-                set.constrainPercentWidth(R.id.pvPhoneCamera, 0.5f)
-
-                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.END, R.id.pvPhoneCamera, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-                set.connect(R.id.svUvcCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.svUvcCamera, ConstraintSet.END)
+                set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.splitGuideline, ConstraintSet.END)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+                set.constrainWidth(R.id.pvPhoneCamera, 0)
+                set.constrainHeight(R.id.pvPhoneCamera, 0)
             }
-            1 -> {
+            1 -> { // 70 / 30
                 btnMode.text = "70/30"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
+                set.setGuidelinePercent(R.id.splitGuideline, 0.7f)
 
-                set.constrainPercentWidth(R.id.svUvcCamera, 0.7f)
-                set.constrainPercentWidth(R.id.pvPhoneCamera, 0.3f)
-
-                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.END, R.id.pvPhoneCamera, ConstraintSet.START)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.svUvcCamera, ConstraintSet.END)
+                set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.splitGuideline, ConstraintSet.END)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
+                set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+                set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+                set.constrainWidth(R.id.pvPhoneCamera, 0)
+                set.constrainHeight(R.id.pvPhoneCamera, 0)
             }
-            2 -> {
+            2 -> { // 30 / 70
                 btnMode.text = "30/70"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
+                set.setGuidelinePercent(R.id.splitGuideline, 0.3f)
 
-                set.constrainPercentWidth(R.id.svUvcCamera, 0.3f)
-                set.constrainPercentWidth(R.id.pvPhoneCamera, 0.7f)
-
-                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.END, R.id.pvPhoneCamera, ConstraintSet.START)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.svUvcCamera, ConstraintSet.END)
+                set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.splitGuideline, ConstraintSet.END)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
+                set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+                set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+                set.constrainWidth(R.id.pvPhoneCamera, 0)
+                set.constrainHeight(R.id.pvPhoneCamera, 0)
             }
-            3 -> {
+            3 -> { // PiP
                 btnMode.text = "PiP"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.VISIBLE
-
-                set.constrainPercentWidth(R.id.svUvcCamera, 1.0f)
-                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.END, R.id.pvPhoneCamera, ConstraintSet.END)
+                set.setGuidelinePercent(R.id.splitGuideline, 1.0f)
 
                 set.clear(R.id.pvPhoneCamera, ConstraintSet.START)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
@@ -417,23 +369,24 @@ class MainActivity : AppCompatActivity() {
                 set.constrainWidth(R.id.pvPhoneCamera, 360)
                 set.constrainHeight(R.id.pvPhoneCamera, 270)
             }
-            4 -> {
+            4 -> { // ТЕПЛО 100%
                 btnMode.text = "ТЕПЛО 100%"
                 cameraView.visibility = View.VISIBLE
                 phoneCameraView.visibility = View.GONE
-
-                set.constrainPercentWidth(R.id.svUvcCamera, 1.0f)
-                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.END, R.id.pvPhoneCamera, ConstraintSet.END)
+                set.setGuidelinePercent(R.id.splitGuideline, 1.0f)
             }
-            5 -> {
+            5 -> { // ОПТИКА 100%
                 btnMode.text = "ОПТИКА 100%"
                 cameraView.visibility = View.GONE
                 phoneCameraView.visibility = View.VISIBLE
+                set.setGuidelinePercent(R.id.splitGuideline, 0.0f)
 
-                set.constrainPercentWidth(R.id.pvPhoneCamera, 1.0f)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
                 set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
+                set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+                set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
+                set.constrainWidth(R.id.pvPhoneCamera, 0)
+                set.constrainHeight(R.id.pvPhoneCamera, 0)
             }
         }
 
