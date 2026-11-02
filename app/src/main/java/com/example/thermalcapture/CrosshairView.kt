@@ -252,29 +252,44 @@ class CrosshairView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // 1. Отрисовка рамок целей машинного зрения на соответствующем экране
-        val activeRect = if (isTargetFromThermal) thermalRect else opticalRect
-
-        if (activeRect.width() > 0 && activeRect.height() > 0 && detectedTargets.isNotEmpty()) {
+        // 1. Отрисовка рамок целей машинного зрения
+        if (detectedTargets.isNotEmpty()) {
             for (target in detectedTargets) {
-                val left = activeRect.left + target.bounds.left * activeRect.width()
-                val top = activeRect.top + target.bounds.top * activeRect.height()
-                val right = activeRect.left + target.bounds.right * activeRect.width()
-                val bottom = activeRect.top + target.bounds.bottom * activeRect.height()
+                // Определяем целевое окно: оптика или тепловизор
+                val targetWindow = if (target.isThermalSource) thermalRect else opticalRect
 
-                val boxRect = RectF(left - 3f * density, top - 3f * density, right + 3f * density, bottom + 3f * density)
-                val paint = if (target.isMoving) boxMovingPaint else boxStaticPaint
+                if (targetWindow.width() > 0 && targetWindow.height() > 0) {
+                    val left = targetWindow.left + target.bounds.left * targetWindow.width()
+                    val top = targetWindow.top + target.bounds.top * targetWindow.height()
+                    val right = targetWindow.left + target.bounds.right * targetWindow.width()
+                    val bottom = targetWindow.top + target.bounds.bottom * targetWindow.height()
 
-                canvas.drawRoundRect(boxRect, 3f * density, 3f * density, paint)
+                    val boxRect = RectF(
+                        left - 4f * density,
+                        top - 4f * density,
+                        right + 4f * density,
+                        bottom + 4f * density
+                    )
+                    val paint = if (target.isMoving) boxMovingPaint else boxStaticPaint
 
-                val sign = if (target.estimatedTemp >= 0) "+" else ""
-                val label = String.format("%s%.1f°C", sign, target.estimatedTemp)
-                val textW = textPaint.measureText(label)
-                val textH = textPaint.textSize
+                    // Рамка цели
+                    canvas.drawRoundRect(boxRect, 4f * density, 4f * density, paint)
 
-                val tagRect = RectF(left - 3f * density, top - textH - 6f * density, left + textW + 3f * density, top - 1f * density)
-                canvas.drawRect(tagRect, textBgPaint)
-                canvas.drawText(label, left - 1f * density, top - 3f * density, textPaint)
+                    // Плашка температуры над целью
+                    val sign = if (target.estimatedTemp >= 0) "+" else ""
+                    val label = sign + String.format("%.1f", target.estimatedTemp) + "C"
+                    val textW = textPaint.measureText(label)
+                    val textH = textPaint.textSize
+
+                    val tagRect = RectF(
+                        left - 4f * density,
+                        top - textH - 8f * density,
+                        left + textW + 4f * density,
+                        top - 2f * density
+                    )
+                    canvas.drawRect(tagRect, textBgPaint)
+                    canvas.drawText(label, left - 2f * density, top - 4f * density, textPaint)
+                }
             }
         }
 
