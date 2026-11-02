@@ -15,6 +15,7 @@ import android.view.SurfaceHolder
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -24,7 +25,6 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.constraintlayout.widget.ConstraintLayout
-import androidx.constraintlayout.widget.ConstraintSet
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.herohan.uvcapp.CameraHelper
@@ -43,6 +43,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSound: Button
     private lateinit var btnFlash: Button
     private lateinit var btnResolution: Button
+    private lateinit var btnTracking: Button
+    private lateinit var btnThermalFullscreen: Button
 
     private var cameraHelper: ICameraHelper? = null
 
@@ -55,12 +57,21 @@ class MainActivity : AppCompatActivity() {
     private var isVisionRunning = true
     private var isProcessingFrame = false
 
+    // Тумблер режима трекинга целей
+    private var isTrackingEnabled = true
+
     private var isThermalStreaming = false
     private var forceAnalysisSource = 0 // 0 - Авто, 1 - Оптика, 2 - Тепло
 
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 256, Bitmap.Config.ARGB_8888)
 
-    // Режимы экрана: 0 - 50/50, 1 - 70/30, 2 - 30/70, 3 - PiP, 4 - Тепло 100%, 5 - Оптика 100%
+    // Текущие и предыдущие веса экранов
+    private var currentWeightThermal = 1.0f
+    private var currentWeightOptical = 1.0f
+    private var savedWeightThermal = 1.0f
+    private var savedWeightOptical = 1.0f
+    private var isThermalFullscreen = false
+
     private var displayMode = 0
     private var thermalWidth = 640
     private var thermalHeight = 512
@@ -80,6 +91,8 @@ class MainActivity : AppCompatActivity() {
         btnSound = findViewById(R.id.btnSound)
         btnFlash = findViewById(R.id.btnFlash)
         btnResolution = findViewById(R.id.btnResolution)
+        btnTracking = findViewById(R.id.btnTracking)
+        btnThermalFullscreen = findViewById(R.id.btnThermalFullscreen)
 
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
@@ -108,7 +121,7 @@ class MainActivity : AppCompatActivity() {
             override fun run() {
                 if (!isVisionRunning) return
 
-                if (!isProcessingFrame) {
+                if (!isProcessingFrame && isTrackingEnabled) {
                     val useThermal = when (forceAnalysisSource) {
                         1 -> false
                         2 -> true
@@ -151,11 +164,11 @@ class MainActivity : AppCompatActivity() {
         isProcessingFrame = true
         visionHandler.post {
             try {
-                val targets = visionEngine.processFrame(bmp, isThermal)
+                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp, isThermal) else emptyList()
                 bmp.recycle()
 
                 val hasMotion = targets.any { it.isMoving }
-                if (hasMotion) {
+                if (hasMotion && isTrackingEnabled) {
                     alertManager.triggerMotionAlert()
                 }
 
@@ -163,7 +176,9 @@ class MainActivity : AppCompatActivity() {
                     crosshairOverlay.detectedTargets = targets
                     crosshairOverlay.invalidate()
 
-                    if (targets.isNotEmpty()) {
+                    if (!isTrackingEnabled) {
+                        tvStatus.text = "Трекинг целей: ВЫКЛЮЧЕН"
+                    } else if (targets.isNotEmpty()) {
                         val maxTarget = targets.maxByOrNull { it.contrastScore }
                         val score = maxTarget?.contrastScore?.toInt() ?: 0
                         tvStatus.text = "Движущихся целей: " + targets.size + " (Контраст: " + score + ") [" + sourceName + "]"
@@ -234,9 +249,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
+        // Кнопка включения/выключения трекинга
+        btnTracking.setOnClickListener {
+            isTrackingEnabled = !isTrackingEnabled
+            if (isTrackingEnabled) {
+                btnTracking.text = "ТРЕК: ВКЛ"
+                btnTracking.setBackgroundColor(0xFF008800.toInt())
+            } else {
+                btnTracking.text = "ТРЕК: ВЫКЛ"
+                btnTracking.setBackgroundColor(0xFF444444.toInt())
+                crosshairOverlay.detectedTargets = emptyList()
+                crosshairOverlay.invalidate()
+                tvStatus.text = "Трекинг целей: ВЫКЛЮЧЕН"
+            }
+        }
+
+        // Кнопка "Во весь экран" на тепловизоре
+        btnThermalFullscreen.setOnClickListener {
+            if (!isThermalFullscreen) {
+                savedWeightThermal = currentWeightThermal
+                savedWeightOptical = currentWeightOptical
+                isThermalFullscreen = true
+                btnThermalFullscreen.text = "⤡"
+                setSplitRatio(1.0f, 0.0f, "ТЕПЛО 100%")
+            } else {
+                isThermalFullscreen = false
+                btnThermalFullscreen.text = "⛶"
+                val label = when {
+                    savedWeightThermal == 1.0f && savedWeightOptical == 1.0f -> "50/50"
+                    savedWeightThermal > savedWeightOptical -> "70/30"
+                    else -> "30/70"
+                }
+                setSplitRatio(savedWeightThermal, savedWeightOptical, label)
+            }
+        }
+
+        // Переключение режимов пропорций
         btnMode.setOnClickListener {
-            displayMode = (displayMode + 1) % 6
-            applyDisplayMode(displayMode)
+            displayMode = (displayMode + 1) % 5
+            isThermalFullscreen = false
+            btnThermalFullscreen.text = "⛶"
+
+            when (displayMode) {
+                0 -> setSplitRatio(1.0f, 1.0f, "50/50")
+                1 -> setSplitRatio(0.7f, 0.3f, "70/30")
+                2 -> setSplitRatio(0.3f, 0.7f, "30/70")
+                3 -> setSplitRatio(1.0f, 0.0f, "ТЕПЛО 100%")
+                4 -> setSplitRatio(0.0f, 1.0f, "ОПТИКА 100%")
+            }
         }
 
         btnResolution.setOnClickListener {
@@ -287,6 +347,29 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Сверхнадежное переключение пропорций экрана без сбоев ConstraintLayout
+     */
+    private fun setSplitRatio(weightThermal: Float, weightOptical: Float, modeLabel: String) {
+        val lpT = cameraView.layoutParams as LinearLayout.LayoutParams
+        val lpO = phoneCameraView.layoutParams as LinearLayout.LayoutParams
+
+        lpT.weight = weightThermal
+        lpO.weight = weightOptical
+
+        cameraView.visibility = if (weightThermal > 0f) View.VISIBLE else View.GONE
+        phoneCameraView.visibility = if (weightOptical > 0f) View.VISIBLE else View.GONE
+
+        cameraView.layoutParams = lpT
+        phoneCameraView.layoutParams = lpO
+
+        currentWeightThermal = weightThermal
+        currentWeightOptical = weightOptical
+        btnMode.text = modeLabel
+
+        rootLayout.post { updateOverlayBounds() }
+    }
+
     private fun showResolutionDialog() {
         val resolutions = arrayOf(
             "640 x 512 (FT640L Native)",
@@ -310,104 +393,6 @@ class MainActivity : AppCompatActivity() {
                 rootLayout.post { updateOverlayBounds() }
             }
             .show()
-    }
-
-    /**
-     * Сброс и привязка горизонтальной цепочки двух камер
-     */
-    private fun resetTwoCameraLayout(set: ConstraintSet) {
-        cameraView.visibility = View.VISIBLE
-        phoneCameraView.visibility = View.VISIBLE
-
-        set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-        set.connect(R.id.svUvcCamera, ConstraintSet.END, R.id.pvPhoneCamera, ConstraintSet.START)
-        set.connect(R.id.svUvcCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-        set.connect(R.id.svUvcCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-
-        set.connect(R.id.pvPhoneCamera, ConstraintSet.START, R.id.svUvcCamera, ConstraintSet.END)
-        set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-        set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-        set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-
-        set.constrainWidth(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
-        set.constrainHeight(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
-        set.constrainWidth(R.id.pvPhoneCamera, ConstraintSet.MATCH_CONSTRAINT)
-        set.constrainHeight(R.id.pvPhoneCamera, ConstraintSet.MATCH_CONSTRAINT)
-    }
-
-    /**
-     * Безопасное переключение пропорций через веса (без сбоев и падений)
-     */
-    private fun applyDisplayMode(mode: Int) {
-        val set = ConstraintSet()
-        set.clone(rootLayout)
-
-        when (mode) {
-            0 -> { // 50 / 50
-                btnMode.text = "50/50"
-                resetTwoCameraLayout(set)
-                set.setHorizontalWeight(R.id.svUvcCamera, 1.0f)
-                set.setHorizontalWeight(R.id.pvPhoneCamera, 1.0f)
-            }
-            1 -> { // 70 / 30 (Тепло 70%, Оптика 30%)
-                btnMode.text = "70/30"
-                resetTwoCameraLayout(set)
-                set.setHorizontalWeight(R.id.svUvcCamera, 0.7f)
-                set.setHorizontalWeight(R.id.pvPhoneCamera, 0.3f)
-            }
-            2 -> { // 30 / 70 (Оптика 70%, Тепло 30%)
-                btnMode.text = "30/70"
-                resetTwoCameraLayout(set)
-                set.setHorizontalWeight(R.id.svUvcCamera, 0.3f)
-                set.setHorizontalWeight(R.id.pvPhoneCamera, 0.7f)
-            }
-            3 -> { // PiP (Тепло 100%, Оптика в углу)
-                btnMode.text = "PiP"
-                cameraView.visibility = View.VISIBLE
-                phoneCameraView.visibility = View.VISIBLE
-
-                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-                set.connect(R.id.svUvcCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-                set.connect(R.id.svUvcCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-                set.constrainWidth(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
-                set.constrainHeight(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
-
-                set.clear(R.id.pvPhoneCamera, ConstraintSet.START)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-                set.clear(R.id.pvPhoneCamera, ConstraintSet.BOTTOM)
-                set.constrainWidth(R.id.pvPhoneCamera, 360)
-                set.constrainHeight(R.id.pvPhoneCamera, 270)
-            }
-            4 -> { // ТЕПЛО 100%
-                btnMode.text = "ТЕПЛО 100%"
-                cameraView.visibility = View.VISIBLE
-                phoneCameraView.visibility = View.GONE
-
-                set.connect(R.id.svUvcCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.svUvcCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-                set.connect(R.id.svUvcCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-                set.connect(R.id.svUvcCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-                set.constrainWidth(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
-                set.constrainHeight(R.id.svUvcCamera, ConstraintSet.MATCH_CONSTRAINT)
-            }
-            5 -> { // ОПТИКА 100%
-                btnMode.text = "ОПТИКА 100%"
-                cameraView.visibility = View.GONE
-                phoneCameraView.visibility = View.VISIBLE
-
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
-                set.connect(R.id.pvPhoneCamera, ConstraintSet.BOTTOM, ConstraintSet.PARENT_ID, ConstraintSet.BOTTOM)
-                set.constrainWidth(R.id.pvPhoneCamera, ConstraintSet.MATCH_CONSTRAINT)
-                set.constrainHeight(R.id.pvPhoneCamera, ConstraintSet.MATCH_CONSTRAINT)
-            }
-        }
-
-        set.applyTo(rootLayout)
-        rootLayout.post { updateOverlayBounds() }
     }
 
     private fun startPhoneCamera() {
@@ -479,7 +464,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         isVisionRunning = false
         visionThread.quitSafely()
-     alertManager.release()
+        alertManager.release()
         cameraHelper?.release()
     }
 }
