@@ -252,43 +252,77 @@ class CrosshairView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // 1. Отрисовка рамок целей машинного зрения
+        // 1. Отрисовка движущихся контрастных целей
         if (detectedTargets.isNotEmpty()) {
             for (target in detectedTargets) {
-                // Определяем целевое окно: оптика или тепловизор
-                val targetWindow = if (target.isThermalSource) thermalRect else opticalRect
+                val primaryWindow = if (target.isThermalSource) thermalRect else opticalRect
+                val duplicateWindow = if (target.isThermalSource) opticalRect else thermalRect
 
-                if (targetWindow.width() > 0 && targetWindow.height() > 0) {
-                    val left = targetWindow.left + target.bounds.left * targetWindow.width()
-                    val top = targetWindow.top + target.bounds.top * targetWindow.height()
-                    val right = targetWindow.left + target.bounds.right * targetWindow.width()
-                    val bottom = targetWindow.top + target.bounds.bottom * targetWindow.height()
+                val dupOffX = if (target.isThermalSource) opticalOffsetX else -opticalOffsetX
+                val dupOffY = if (target.isThermalSource) opticalOffsetY else -opticalOffsetY
 
-                    val boxRect = RectF(
-                        left - 4f * density,
-                        top - 4f * density,
-                        right + 4f * density,
-                        bottom + 4f * density
-                    )
-                    val paint = if (target.isMoving) boxMovingPaint else boxStaticPaint
+                // ОБЪЕКТ БОЛЬШЕ 9x9 -> СИЛУЭТ, ИНАЧЕ -> КВАДРАТНАЯ РАМКА
+                val isLargeTarget = target.widthPx > 9 || target.heightPx > 9
 
-                    // Рамка цели
-                    canvas.drawRoundRect(boxRect, 4f * density, 4f * density, paint)
+                val windowsToDraw = listOf(
+                    Pair(primaryWindow, 0f to 0f),
+                    Pair(duplicateWindow, dupOffX to dupOffY)
+                )
 
-                    // Плашка температуры над целью
-                    val sign = if (target.estimatedTemp >= 0) "+" else ""
-                    val label = sign + String.format("%.1f", target.estimatedTemp) + "C"
-                    val textW = textPaint.measureText(label)
-                    val textH = textPaint.textSize
+                for ((win, offset) in windowsToDraw) {
+                    if (win.width() > 0 && win.height() > 0) {
+                        val (ox, oy) = offset
 
-                    val tagRect = RectF(
-                        left - 4f * density,
-                        top - textH - 8f * density,
-                        left + textW + 4f * density,
-                        top - 2f * density
-                    )
-                    canvas.drawRect(tagRect, textBgPaint)
-                    canvas.drawText(label, left - 2f * density, top - 4f * density, textPaint)
+                        if (isLargeTarget && target.silhouettePoints.isNotEmpty()) {
+                            // 1. КОНТУР ПО СИЛУЭТУ для объектов больше 9x9
+                            val path = Path()
+                            var first = true
+                            for (pt in target.silhouettePoints) {
+                                val px = win.left + pt.x * win.width() + ox
+                                val py = win.top + pt.y * win.height() + oy
+                                if (first) {
+                                    path.moveTo(px, py)
+                                    first = false
+                                } else {
+                                    path.lineTo(px, py)
+                                }
+                            }
+                            path.close()
+
+                            boxMovingPaint.strokeWidth = 2.5f * density
+                            canvas.drawPath(path, boxMovingPaint)
+
+                            // Плашка с номером цели над силуэтом
+                            val topY = win.top + target.bounds.top * win.height() + oy
+                            val leftX = win.left + target.bounds.left * win.width() + ox
+                            val label = "ЦЕЛЬ #" + target.id
+                            val textW = textPaint.measureText(label)
+                            val textH = textPaint.textSize
+
+                            val tagRect = RectF(
+                                leftX,
+                                topY - textH - 6f * density,
+                                leftX + textW + 6f * density,
+                                topY - 2f * density
+                            )
+                            canvas.drawRect(tagRect, textBgPaint)
+                            canvas.drawText(label, leftX + 2f * density, topY - 4f * density, textPaint)
+                        } else {
+                            // 2. КВАДРАТНАЯ РАМКА для микро-объектов <= 9x9 пикселей
+                            val cx = win.left + target.bounds.centerX() * win.width() + ox
+                            val cy = win.top + target.bounds.centerY() * win.height() + oy
+
+                            // Квадратный размер рамки (не менее 14x14 dp для идеальной видимости)
+                            val halfBox = max(7f * density, max(target.widthPx, target.heightPx) * density * 0.9f)
+                            val boxRect = RectF(cx - halfBox, cy - halfBox, cx + halfBox, cy + halfBox)
+
+                            boxMovingPaint.strokeWidth = 2f * density
+                            canvas.drawRect(boxRect, boxMovingPaint)
+
+                            // Центральная точка внутри рамки
+                            canvas.drawCircle(cx, cy, 1.5f * density, boxMovingPaint)
+                        }
+                    }
                 }
             }
         }
@@ -307,7 +341,6 @@ class CrosshairView @JvmOverloads constructor(
             drawFastReticle(canvas, cx, cy, if (isOpticalReady) opticalShader else null)
         }
     }
-
     private fun drawFastReticle(canvas: Canvas, cx: Float, cy: Float, shader: BitmapShader?) {
         if (shader != null) {
             reticlePaint.shader = shader
