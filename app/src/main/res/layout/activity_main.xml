@@ -7,13 +7,14 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- 1. Тепловизор (CVBS через UVC) -->
+    <!-- 1. Тепловизор (FT640L CVBS) -->
     <com.serenegiant.widget.AspectRatioSurfaceView
         android:id="@+id/svUvcCamera"
         android:layout_width="0dp"
         android:layout_height="match_parent"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toStartOf="@+id/pvPhoneCamera"
+        app:layout_constraintHorizontal_weight="0.5"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
@@ -22,8 +23,10 @@
         android:id="@+id/pvPhoneCamera"
         android:layout_width="0dp"
         android:layout_height="match_parent"
+        app:implementationMode="performance"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintHorizontal_weight="0.5"
         app:layout_constraintStart_toEndOf="@+id/svUvcCamera"
         app:layout_constraintTop_toTopOf="parent" />
 
@@ -37,77 +40,103 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Статус -->
+    <!-- Строка статуса -->
     <TextView
         android:id="@+id/tvStatus"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_margin="12dp"
+        android:layout_margin="10dp"
         android:background="#99000000"
         android:padding="6dp"
-        android:text="Поиск тепловых целей: АКТИВЕН"
+        android:text="Поиск целей: АКТИВЕН"
         android:textColor="#00FF00"
         android:textSize="12sp"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Тактическая панель управления (справа внизу) -->
-    <LinearLayout
+    <!-- Горизонтальная прокручиваемая панель управления (не перекрывает обзор) -->
+    <HorizontalScrollView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_margin="10dp"
-        android:orientation="horizontal"
+        android:layout_margin="8dp"
+        android:scrollbars="none"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
-        <Button
-            android:id="@+id/btnSound"
+        <LinearLayout
             android:layout_width="wrap_content"
-            android:layout_height="38dp"
-            android:layout_marginEnd="6dp"
-            android:backgroundTint="#008800"
-            android:text="ЗВУК: ВКЛ"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp" />
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
 
-        <Button
-            android:id="@+id/btnFlash"
-            android:layout_width="wrap_content"
-            android:layout_height="38dp"
-            android:layout_marginEnd="6dp"
-            android:backgroundTint="#444444"
-            android:text="СТРОБ: ВЫКЛ"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp" />
+            <Button
+                android:id="@+id/btnRatio"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="5dp"
+                android:backgroundTint="#333333"
+                android:text="ЭКРАН: 50/50"
+                android:textColor="#FFFFFF"
+                android:textSize="9.5sp" />
 
-        <Button
-            android:id="@+id/btnCalibTemp"
-            android:layout_width="wrap_content"
-            android:layout_height="38dp"
-            android:layout_marginEnd="6dp"
-            android:backgroundTint="#444444"
-            android:text="КАЛИБР. ТЕМП"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp" />
+            <Button
+                android:id="@+id/btnRes"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="5dp"
+                android:backgroundTint="#333333"
+                android:text="FT640L (640x512)"
+                android:textColor="#FFFFFF"
+                android:textSize="9.5sp" />
 
-        <Button
-            android:id="@+id/btnCalibrate"
-            android:layout_width="wrap_content"
-            android:layout_height="38dp"
-            android:layout_marginEnd="6dp"
-            android:backgroundTint="#444444"
-            android:text="ПРИЦЕЛ: ФИКС"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp" />
+            <Button
+                android:id="@+id/btnSound"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="5dp"
+                android:backgroundTint="#008800"
+                android:text="ЗВУК: ВКЛ"
+                android:textColor="#FFFFFF"
+                android:textSize="9.5sp" />
 
-        <Button
-            android:id="@+id/btnMode"
-            android:layout_width="wrap_content"
-            android:layout_height="38dp"
-            android:backgroundTint="#444444"
-            android:text="РЕЖИМ: 50/50"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp" />
-    </LinearLayout>
+            <Button
+                android:id="@+id/btnFlash"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="5dp"
+                android:backgroundTint="#333333"
+                android:text="СТРОБ: ВЫКЛ"
+                android:textColor="#FFFFFF"
+                android:textSize="9.5sp" />
+
+            <Button
+                android:id="@+id/btnCalibTemp"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="5dp"
+                android:backgroundTint="#333333"
+                android:text="ТЕМП: КАЛИБР"
+                android:textColor="#FFFFFF"
+                android:textSize="9.5sp" />
+
+            <Button
+                android:id="@+id/btnCalibrate"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginEnd="5dp"
+                android:backgroundTint="#333333"
+                android:text="ПРИЦЕЛ: ФИКС"
+                android:textColor="#FFFFFF"
+                android:textSize="9.5sp" />
+
+            <Button
+                android:id="@+id/btnMode"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:backgroundTint="#333333"
+                android:text="РЕЖИМ: СПЛИТ"
+                android:textColor="#FFFFFF"
+                android:textSize="9.5sp" />
+        </LinearLayout>
+    </HorizontalScrollView>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
