@@ -19,7 +19,7 @@ class AlertManager(context: Context) {
     var isFlashEnabled: Boolean = false
 
     private var lastAlertTime = 0L
-    private val alertCooldownMs = 1200L // Защита от непрерывного писка
+    private val alertCooldownMs = 1200L
 
     init {
         try {
@@ -28,34 +28,29 @@ class AlertManager(context: Context) {
                 cameraManager.getCameraCharacteristics(id)
                     .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {}
     }
 
-    /**
-     * Подача тревожного сигнала при движении
-     */
     fun triggerMotionAlert() {
         val now = System.currentTimeMillis()
         if (now - lastAlertTime < alertCooldownMs) return
         lastAlertTime = now
 
-        // 1. Звуковой сигнал (двойной короткий бип)
         if (isSoundEnabled) {
             try {
                 toneGenerator?.startTone(ToneGenerator.TONE_PROP_BEEP2, 180)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {}
         }
 
-        // 2. Стробоскоп вспышкой
         if (isFlashEnabled && torchCameraId != null) {
             try {
                 cameraManager.setTorchMode(torchCameraId!!, true)
                 handler.postDelayed({
                     try {
                         cameraManager.setTorchMode(torchCameraId!!, false)
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) {}
                 }, 120)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {}
         }
     }
 
@@ -65,7 +60,7 @@ class AlertManager(context: Context) {
         if (torchCameraId != null) {
             try {
                 cameraManager.setTorchMode(torchCameraId!!, false)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {}
         }
     }
 }
