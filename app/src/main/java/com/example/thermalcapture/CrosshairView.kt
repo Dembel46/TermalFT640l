@@ -37,18 +37,15 @@ class CrosshairView @JvmOverloads constructor(
     private val thinWidth = 1.2f * density
     private val dotRadius = 1.5f * density
 
-    // Оптимальный размер буфера негатива (120x120 пикселей обрабатываются за 0.15 мс)
     private val negSize = 120
     private val totalNegPixels = negSize * negSize
 
-    // Предвыделенные буферы для оптической камеры (0 байт аллокаций в цикле)
     private val opticalNegativeBitmap = Bitmap.createBitmap(negSize, negSize, Bitmap.Config.ARGB_8888)
     private val opticalRawPixels = IntArray(totalNegPixels)
     private val opticalNegPixels = IntArray(totalNegPixels)
     private val opticalShader = BitmapShader(opticalNegativeBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
     private val opticalMatrix = Matrix()
 
-    // Предвыделенные буферы для тепловизора (CVBS)
     private val thermalRawBitmap = Bitmap.createBitmap(negSize, negSize, Bitmap.Config.ARGB_8888)
     private val thermalNegativeBitmap = Bitmap.createBitmap(negSize, negSize, Bitmap.Config.ARGB_8888)
     private val thermalRawPixels = IntArray(totalNegPixels)
@@ -56,7 +53,6 @@ class CrosshairView @JvmOverloads constructor(
     private val thermalShader = BitmapShader(thermalNegativeBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
     private val thermalMatrix = Matrix()
 
-    // Кисти прицела
     private val reticlePaint = Paint().apply {
         strokeCap = Paint.Cap.ROUND
         style = Paint.Style.STROKE
@@ -68,9 +64,35 @@ class CrosshairView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
+    // Кисти для рамок целей машинного зрения
+    private val boxMovingPaint = Paint().apply {
+        color = Color.RED
+        style = Paint.Style.STROKE
+        strokeWidth = 2.5f * density
+        isAntiAlias = true
+    }
+
+    private val boxStaticPaint = Paint().apply {
+        color = Color.parseColor("#FF9900") // Янтарный для неподвижных горячих точек
+        style = Paint.Style.STROKE
+        strokeWidth = 2.0f * density
+        isAntiAlias = true
+    }
+
+    private val textPaint = Paint().apply {
+        color = Color.WHITE
+        textSize = 11f * density
+        isFakeBoldText = true
+        isAntiAlias = true
+    }
+
+    private val textBgPaint = Paint().apply {
+        color = Color.parseColor("#99000000")
+        style = Paint.Style.FILL
+    }
+
     private val taperPath = Path()
 
-    // Смещение юстировки ("ТЯНИ")
     var opticalOffsetX = 0f
     var opticalOffsetY = 0f
     var isCalibrationMode = false
@@ -81,13 +103,15 @@ class CrosshairView @JvmOverloads constructor(
     var phoneCameraView: PreviewView? = null
     var thermalCameraView: AspectRatioSurfaceView? = null
 
+    // Список обнаруженных целей от ThermalVisionEngine
+    var detectedTargets: List<DetectedTarget> = emptyList()
+
     private var isOpticalReady = false
     private var isThermalReady = false
 
     private val sampleHandler = Handler(Looper.getMainLooper())
     private var isSamplingActive = false
 
-    // Частота обновления 30 кадров/сек (интервал 33 мс) для мгновенного отклика
     private val sampleRunnable = object : Runnable {
         override fun run() {
             updateOpticalFast()
@@ -111,9 +135,6 @@ class CrosshairView @JvmOverloads constructor(
         sampleHandler.removeCallbacks(sampleRunnable)
     }
 
-    /**
-     * Высокоскоростной захват негатива оптической камеры (< 1.5 мс)
-     */
     private fun updateOpticalFast() {
         val pView = phoneCameraView ?: return
         if (pView.width <= 0 || pView.height <= 0) return
@@ -136,13 +157,9 @@ class CrosshairView @JvmOverloads constructor(
             val leftPx = (centerBmpX - negSize / 2).coerceIn(0, maxLeft)
             val topPx = (centerBmpY - negSize / 2).coerceIn(0, maxTop)
 
-            // 1. Мгновенный срез 120x120 напрямую в массив без создания промежуточных Bitmap!
             fullBitmap.getPixels(opticalRawPixels, 0, negSize, leftPx, topPx, negSize, negSize)
-
-            // 2. Сразу освобождаем тяжелый кадр камеры
             fullBitmap.recycle()
 
-            // 3. Быстрый математический ч/б негатив с контрастным бустом
             for (i in 0 until totalNegPixels) {
                 val p = opticalRawPixels[i]
                 val r = (p shr 16) and 0xFF
@@ -160,10 +177,8 @@ class CrosshairView @JvmOverloads constructor(
                 opticalNegPixels[i] = 0xFF000000.toInt() or (contrastNeg shl 16) or (contrastNeg shl 8) or contrastNeg
             }
 
-            // 4. Обновление пикселей существующего Bitmap (шейдер подхватывает аппаратно)
             opticalNegativeBitmap.setPixels(opticalNegPixels, 0, negSize, 0, 0, negSize, negSize)
 
-            // 5. Привязка матрицы к физическим координатам экрана
             val screenLeft = leftPx / scaleX + pView.x
             val screenTop = topPx / scaleY + pView.y
 
@@ -178,9 +193,6 @@ class CrosshairView @JvmOverloads constructor(
         }
     }
 
-    /**
-     * Высокоскоростной захват тепловизора CVBS через аппаратный PixelCopy
-     */
     private fun updateThermalFast() {
         val tView = thermalCameraView ?: return
         val surface = tView.holder.surface ?: return
@@ -239,14 +251,46 @@ class CrosshairView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // 1. Прицел тепловизора
+        // 1. Отрисовка рамок целей машинного зрения (на активном окне камеры)
+        val activeRect = if (thermalRect.width() > 0 && (thermalCameraView?.holder?.surface?.isValid == true)) {
+            thermalRect
+        } else {
+            opticalRect
+        }
+
+        if (activeRect.width() > 0 && activeRect.height() > 0 && detectedTargets.isNotEmpty()) {
+            for (target in detectedTargets) {
+                val left = activeRect.left + target.bounds.left * activeRect.width()
+                val top = activeRect.top + target.bounds.top * activeRect.height()
+                val right = activeRect.left + target.bounds.right * activeRect.width()
+                val bottom = activeRect.top + target.bounds.bottom * activeRect.height()
+
+                val boxRect = RectF(left - 4f * density, top - 4f * density, right + 4f * density, bottom + 4f * density)
+                val paint = if (target.isMoving) boxMovingPaint else boxStaticPaint
+
+                // Рамка цели с угловыми засечками
+                canvas.drawRoundRect(boxRect, 4f * density, 4f * density, paint)
+
+                // Текстовая плашка с температурой: [+37.2°C]
+                val sign = if (target.estimatedTemp >= 0) "+" else ""
+                val label = String.format("%s%.1f°C", sign, target.estimatedTemp)
+                val textW = textPaint.measureText(label)
+                val textH = textPaint.textSize
+
+                val tagRect = RectF(left - 4f * density, top - textH - 8f * density, left + textW + 4f * density, top - 2f * density)
+                canvas.drawRect(tagRect, textBgPaint)
+                canvas.drawText(label, left - 2f * density, top - 4f * density, textPaint)
+            }
+        }
+
+        // 2. Прицел тепловизора
         if (thermalRect.width() > 0 && thermalRect.height() > 0) {
             val cx = thermalRect.centerX()
             val cy = thermalRect.centerY()
             drawFastReticle(canvas, cx, cy, if (isThermalReady) thermalShader else null)
         }
 
-        // 2. Прицел оптической камеры (с учетом "ТЯНИ")
+        // 3. Прицел оптической камеры
         if (opticalRect.width() > 0 && opticalRect.height() > 0) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
@@ -254,12 +298,7 @@ class CrosshairView @JvmOverloads constructor(
         }
     }
 
-    private fun drawFastReticle(
-        canvas: Canvas,
-        cx: Float,
-        cy: Float,
-        shader: BitmapShader?
-    ) {
+    private fun drawFastReticle(canvas: Canvas, cx: Float, cy: Float, shader: BitmapShader?) {
         if (shader != null) {
             reticlePaint.shader = shader
             fillPaint.shader = shader
@@ -273,10 +312,9 @@ class CrosshairView @JvmOverloads constructor(
         val halfThick = thickWidth / 2f
         val halfThin = thinWidth / 2f
 
-        // 1. Центральная марка
         canvas.drawCircle(cx, cy, dotRadius, fillPaint)
 
-        // 2. Левый луч
+        // Левый луч
         reticlePaint.strokeWidth = thickWidth
         canvas.drawLine(cx - reticleLength, cy, cx - taperStart, cy, reticlePaint)
         taperPath.reset()
@@ -287,7 +325,7 @@ class CrosshairView @JvmOverloads constructor(
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
 
-        // 3. Правый луч
+        // Правый луч
         canvas.drawLine(cx + taperStart, cy, cx + reticleLength, cy, reticlePaint)
         taperPath.reset()
         taperPath.moveTo(cx + taperStart, cy - halfThick)
@@ -297,7 +335,7 @@ class CrosshairView @JvmOverloads constructor(
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
 
-        // 4. Верхний луч
+        // Верхний луч
         canvas.drawLine(cx, cy - reticleLength, cx, cy - taperStart, reticlePaint)
         taperPath.reset()
         taperPath.moveTo(cx - halfThick, cy - taperStart)
@@ -307,7 +345,7 @@ class CrosshairView @JvmOverloads constructor(
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
 
-        // 5. Нижний луч
+        // Нижний луч
         canvas.drawLine(cx, cy + taperStart, cx, cy + reticleLength, reticlePaint)
         taperPath.reset()
         taperPath.moveTo(cx - halfThick, cy + taperStart)
