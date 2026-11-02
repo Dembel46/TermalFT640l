@@ -64,7 +64,7 @@ class CrosshairView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
-    // Кисти для рамок целей машинного зрения
+    // Кисти машинного зрения
     private val boxMovingPaint = Paint().apply {
         color = Color.RED
         style = Paint.Style.STROKE
@@ -73,7 +73,7 @@ class CrosshairView @JvmOverloads constructor(
     }
 
     private val boxStaticPaint = Paint().apply {
-        color = Color.parseColor("#FF9900") // Янтарный для неподвижных горячих точек
+        color = Color.parseColor("#FF9900")
         style = Paint.Style.STROKE
         strokeWidth = 2.0f * density
         isAntiAlias = true
@@ -81,13 +81,13 @@ class CrosshairView @JvmOverloads constructor(
 
     private val textPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 11f * density
+        textSize = 10.5f * density
         isFakeBoldText = true
         isAntiAlias = true
     }
 
     private val textBgPaint = Paint().apply {
-        color = Color.parseColor("#99000000")
+        color = Color.parseColor("#AA000000")
         style = Paint.Style.FILL
     }
 
@@ -103,8 +103,9 @@ class CrosshairView @JvmOverloads constructor(
     var phoneCameraView: PreviewView? = null
     var thermalCameraView: AspectRatioSurfaceView? = null
 
-    // Список обнаруженных целей от ThermalVisionEngine
+    // Цели машинного зрения и флаг источника (тепловизор или оптика)
     var detectedTargets: List<DetectedTarget> = emptyList()
+    var isTargetFromThermal: Boolean = false
 
     private var isOpticalReady = false
     private var isThermalReady = false
@@ -251,12 +252,8 @@ class CrosshairView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // 1. Отрисовка рамок целей машинного зрения (на активном окне камеры)
-        val activeRect = if (thermalRect.width() > 0 && (thermalCameraView?.holder?.surface?.isValid == true)) {
-            thermalRect
-        } else {
-            opticalRect
-        }
+        // 1. Отрисовка рамок целей машинного зрения на соответствующем экране
+        val activeRect = if (isTargetFromThermal) thermalRect else opticalRect
 
         if (activeRect.width() > 0 && activeRect.height() > 0 && detectedTargets.isNotEmpty()) {
             for (target in detectedTargets) {
@@ -265,21 +262,19 @@ class CrosshairView @JvmOverloads constructor(
                 val right = activeRect.left + target.bounds.right * activeRect.width()
                 val bottom = activeRect.top + target.bounds.bottom * activeRect.height()
 
-                val boxRect = RectF(left - 4f * density, top - 4f * density, right + 4f * density, bottom + 4f * density)
+                val boxRect = RectF(left - 3f * density, top - 3f * density, right + 3f * density, bottom + 3f * density)
                 val paint = if (target.isMoving) boxMovingPaint else boxStaticPaint
 
-                // Рамка цели с угловыми засечками
-                canvas.drawRoundRect(boxRect, 4f * density, 4f * density, paint)
+                canvas.drawRoundRect(boxRect, 3f * density, 3f * density, paint)
 
-                // Текстовая плашка с температурой: [+37.2°C]
                 val sign = if (target.estimatedTemp >= 0) "+" else ""
                 val label = String.format("%s%.1f°C", sign, target.estimatedTemp)
                 val textW = textPaint.measureText(label)
                 val textH = textPaint.textSize
 
-                val tagRect = RectF(left - 4f * density, top - textH - 8f * density, left + textW + 4f * density, top - 2f * density)
+                val tagRect = RectF(left - 3f * density, top - textH - 6f * density, left + textW + 3f * density, top - 1f * density)
                 canvas.drawRect(tagRect, textBgPaint)
-                canvas.drawText(label, left - 2f * density, top - 4f * density, textPaint)
+                canvas.drawText(label, left - 1f * density, top - 3f * density, textPaint)
             }
         }
 
@@ -314,7 +309,6 @@ class CrosshairView @JvmOverloads constructor(
 
         canvas.drawCircle(cx, cy, dotRadius, fillPaint)
 
-        // Левый луч
         reticlePaint.strokeWidth = thickWidth
         canvas.drawLine(cx - reticleLength, cy, cx - taperStart, cy, reticlePaint)
         taperPath.reset()
@@ -325,7 +319,6 @@ class CrosshairView @JvmOverloads constructor(
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
 
-        // Правый луч
         canvas.drawLine(cx + taperStart, cy, cx + reticleLength, cy, reticlePaint)
         taperPath.reset()
         taperPath.moveTo(cx + taperStart, cy - halfThick)
@@ -335,7 +328,6 @@ class CrosshairView @JvmOverloads constructor(
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
 
-        // Верхний луч
         canvas.drawLine(cx, cy - reticleLength, cx, cy - taperStart, reticlePaint)
         taperPath.reset()
         taperPath.moveTo(cx - halfThick, cy - taperStart)
@@ -345,7 +337,6 @@ class CrosshairView @JvmOverloads constructor(
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
 
-        // Нижний луч
         canvas.drawLine(cx, cy + taperStart, cx, cy + reticleLength, reticlePaint)
         taperPath.reset()
         taperPath.moveTo(cx - halfThick, cy + taperStart)
