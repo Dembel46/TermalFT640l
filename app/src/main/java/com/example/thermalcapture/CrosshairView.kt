@@ -18,7 +18,7 @@ import android.view.MotionEvent
 import android.view.PixelCopy
 import android.view.View
 import androidx.camera.view.PreviewView
-import com.serenegiant.widget.AspectRatioSurfaceView
+import android.view.SurfaceView
 import kotlin.math.roundToInt
 
 class CrosshairView @JvmOverloads constructor(
@@ -103,7 +103,7 @@ class CrosshairView @JvmOverloads constructor(
     var opticalRect = RectF()
 
     var phoneCameraView: PreviewView? = null
-    var thermalCameraView: AspectRatioSurfaceView? = null
+    var thermalCameraView: SurfaceView? = null
 
     var detectedTargets: List<DetectedTarget> = emptyList()
 
