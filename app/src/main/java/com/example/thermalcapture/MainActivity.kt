@@ -96,7 +96,6 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
-        // Загрузка сохраненных координат юстировки
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
@@ -108,7 +107,6 @@ class MainActivity : AppCompatActivity() {
         initButtons()
         checkPermissionsAndInit()
 
-        // Старт строго в режиме 70/30
         rootLayout.post {
             setSplitRatio(0.7f, 0.3f, "70/30")
         }
@@ -141,7 +139,7 @@ class MainActivity : AppCompatActivity() {
                             isProcessingFrame = false
                         }
                     } else {
-                        // Тепловизор отключен -> НЕ сканируем оптику, убираем рамки
+                        // Тепловизор отключен -> чистый экран, не сканируем оптику
                         if (crosshairOverlay.detectedTargets.isNotEmpty()) {
                             crosshairOverlay.detectedTargets = emptyList()
                             crosshairOverlay.invalidate()
@@ -227,9 +225,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Математическое вписывание 4:3 строго в границы контейнера (0% перекрытия с соседним окном)
-     */
     private fun adjustThermalViewBounds() {
         val containerW = thermalContainer.width
         val containerH = thermalContainer.height
@@ -341,7 +336,6 @@ class MainActivity : AppCompatActivity() {
             showResolutionDialog()
         }
 
-        // Кнопка ЮСТИРОВКА
         btnCalibrate.setOnClickListener {
             crosshairOverlay.isCalibrationMode = !crosshairOverlay.isCalibrationMode
             if (crosshairOverlay.isCalibrationMode) {
