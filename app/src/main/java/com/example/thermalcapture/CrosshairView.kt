@@ -68,8 +68,8 @@ class CrosshairView @JvmOverloads constructor(
     }
 
     private val colorMoving = Color.RED
-    private val colorHumanVehicle = Color.parseColor("#FFE082") // Бледно-желтый
-    private val colorOther = Color.parseColor("#A5D6A7")        // Бледно-зеленый
+    private val colorHumanVehicle = Color.parseColor("#FFE082")
+    private val colorOther = Color.parseColor("#A5D6A7")
 
     // Кисти для режима "ЮСТИРОВКА"
     private val justCornersPaint = Paint().apply {
@@ -91,11 +91,34 @@ class CrosshairView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
+    // Кисти для вертикальной шкалы прозрачности "ГИБРИД"
+    private val sliderTrackPaint = Paint().apply {
+        color = Color.parseColor("#66000000")
+        style = Paint.Style.FILL
+    }
+
+    private val sliderProgressPaint = Paint().apply {
+        color = Color.parseColor("#00E5FF") // Неоново-бирюзовый
+        style = Paint.Style.FILL
+    }
+
+    private val sliderTextPaint = Paint().apply {
+        color = Color.WHITE
+        textSize = 10f * density
+        isFakeBoldText = true
+        isAntiAlias = true
+    }
+
     private val taperPath = Path()
 
     var opticalOffsetX = 0f
     var opticalOffsetY = 0f
     var isCalibrationMode = false
+
+    // Режим "ГИБРИД" и значение прозрачности (0.0..1.0)
+    var isHybridMode = false
+    var hybridAlpha = 0.5f
+    var onHybridAlphaChanged: ((Float) -> Unit)? = null
 
     var thermalRect = RectF()
     var opticalRect = RectF()
@@ -290,14 +313,14 @@ class CrosshairView @JvmOverloads constructor(
             drawFastReticle(canvas, cx, cy, if (isThermalReady) thermalShader else null)
         }
 
-        // 3. Прицел оптической камеры (полностью скрыт, если режим "ТЕПЛО 100%")
-        if (isOpticalVisible) {
+        // 3. Прицел оптической камеры (в режиме гибрида центрирован с учетом юстировки)
+        if (isOpticalVisible && !isHybridMode) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
 
             drawFastReticle(canvas, cx, cy, if (isOpticalReady) opticalShader else null)
 
-            // РЕЖИМ "ЮСТИРОВКА": аккуратные 4 угла без обрезки краев
+            // РЕЖИМ "ЮСТИРОВКА": аккуратные 4 угла
             if (isCalibrationMode) {
                 val left = (cx - reticleLength - 8f * density).coerceAtLeast(opticalRect.left + 6f * density)
                 val right = (cx + reticleLength + 8f * density).coerceAtMost(opticalRect.right - 6f * density)
@@ -305,23 +328,18 @@ class CrosshairView @JvmOverloads constructor(
                 val bottom = (cy + reticleLength + 8f * density).coerceAtMost(opticalRect.bottom - 6f * density)
                 val arm = 15f * density
 
-                // Верхний левый угол
                 canvas.drawLine(left, top, left + arm, top, justCornersPaint)
                 canvas.drawLine(left, top, left, top + arm, justCornersPaint)
 
-                // Верхний правый угол
                 canvas.drawLine(right, top, right - arm, top, justCornersPaint)
                 canvas.drawLine(right, top, right, top + arm, justCornersPaint)
 
-                // Нижний левый угол
                 canvas.drawLine(left, bottom, left + arm, bottom, justCornersPaint)
                 canvas.drawLine(left, bottom, left, bottom - arm, justCornersPaint)
 
-                // Нижний правый угол
                 canvas.drawLine(right, bottom, right - arm, bottom, justCornersPaint)
                 canvas.drawLine(right, bottom, right, bottom - arm, justCornersPaint)
 
-                // Плашка "ПЕРЕМЕЩАЙ"
                 val text = "ПЕРЕМЕЩАЙ"
                 val tW = justTextPaint.measureText(text)
                 val tH = justTextPaint.textSize
@@ -331,6 +349,28 @@ class CrosshairView @JvmOverloads constructor(
                 canvas.drawRect(tagX - 5f * density, tagY - tH - 3f * density, tagX + tW + 5f * density, tagY + 3f * density, justBgPaint)
                 canvas.drawText(text, tagX, tagY, justTextPaint)
             }
+        }
+
+        // 4. ВЕРТИКАЛЬНАЯ ТАКТИЧЕСКАЯ ШКАЛА ПРОЗРАЧНОСТИ В РЕЖИМЕ "ГИБРИД"
+        if (isHybridMode) {
+            val trackW = 8f * density
+            val trackH = 180f * density
+            val trackLeft = 16f * density
+            val trackTop = (height - trackH) / 2f
+            val trackRight = trackLeft + trackW
+            val trackBottom = trackTop + trackH
+
+            // Фон трека
+            canvas.drawRoundRect(RectF(trackLeft, trackTop, trackRight, trackBottom), 4f * density, 4f * density, sliderTrackPaint)
+
+            // Заполненная часть (уровень прозрачности тепловизора снизу вверх)
+            val fillHeight = trackH * hybridAlpha
+            val fillTop = trackBottom - fillHeight
+            canvas.drawRoundRect(RectF(trackLeft, fillTop, trackRight, trackBottom), 4f * density, 4f * density, sliderProgressPaint)
+
+            // Подпись процента над шкалой
+            val percentText = String.format("ТЕПЛО %d%%", (hybridAlpha * 100).roundToInt())
+            canvas.drawText(percentText, trackLeft, trackTop - 8f * density, sliderTextPaint)
         }
     }
 
@@ -393,30 +433,60 @@ class CrosshairView @JvmOverloads constructor(
         canvas.drawPath(taperPath, fillPaint)
     }
 
-    // Служебные переменные для перетаскивания прицела
     private var lastTouchX = 0f
     private var lastTouchY = 0f
+    private var isDraggingSlider = false
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!isCalibrationMode) return false
-
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
-                lastTouchX = event.x
-                lastTouchY = event.y
-                return true
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val dx = event.x - lastTouchX
-                val dy = event.y - lastTouchY
-                opticalOffsetX += dx
-                opticalOffsetY += dy
-                lastTouchX = event.x
-                lastTouchY = event.y
-                invalidate()
-                return true
+        // 1. УПРАВЛЕНИЕ ПРОЗРАЧНОСТЬЮ В РЕЖИМЕ "ГИБРИД" (вертикальный жест на левой стороне экрана)
+        if (isHybridMode && !isCalibrationMode) {
+            val touchAreaWidth = 120f * density // Левая зона экрана (как в медиаплеере)
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (event.x <= touchAreaWidth) {
+                        isDraggingSlider = true
+                        lastTouchY = event.y
+                        return true
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (isDraggingSlider) {
+                        val dy = lastTouchY - event.y // Движение вверх увеличивает прозрачность тепловизора
+                        lastTouchY = event.y
+                        val sensitivity = 0.005f
+                        hybridAlpha = (hybridAlpha + dy * sensitivity).coerceIn(0.0f, 1.0f)
+                        onHybridAlphaChanged?.invoke(hybridAlpha)
+                        invalidate()
+                        return true
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    isDraggingSlider = false
+                }
             }
         }
+
+        // 2. ЮСТИРОВКА ПРИЦЕЛА (жест перемещения)
+        if (isCalibrationMode) {
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.x - lastTouchX
+                    val dy = event.y - lastTouchY
+                    opticalOffsetX += dx
+                    opticalOffsetY += dy
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    invalidate()
+                    return true
+                }
+            }
+        }
+
         return super.onTouchEvent(event)
     }
 }
