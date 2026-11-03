@@ -4,17 +4,16 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbDevice
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.view.Gravity
-import android.view.PixelCopy
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -40,7 +39,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraContainer: LinearLayout
     private lateinit var thermalContainer: FrameLayout
     private lateinit var opticalContainer: FrameLayout
-    private lateinit var cameraView: SurfaceView
+    private lateinit var cameraView: TextureView
     private lateinit var phoneCameraView: PreviewView
     private lateinit var crosshairOverlay: CrosshairView
     private lateinit var tvStatus: TextView
@@ -53,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnThermalFullscreen: Button
 
     private var cameraHelper: ICameraHelper? = null
+    private var thermalSurface: Surface? = null
 
     private val visionEngine = ThermalVisionEngine()
     private lateinit var alertManager: AlertManager
@@ -96,6 +96,7 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
+        // Загрузка сохраненных координат юстировки
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
@@ -114,7 +115,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Аналитика работает ИСКЛЮЧИТЕЛЬНО по тепловизору
+     * Аналитика работает строго по тепловизору
      */
     private fun initVisionPipeline() {
         visionThread = HandlerThread("VisionProcessingThread").apply { start() }
@@ -125,25 +126,22 @@ class MainActivity : AppCompatActivity() {
                 if (!isVisionRunning) return
 
                 if (!isProcessingFrame && isTrackingEnabled) {
-                    val isThermalActive = isThermalStreaming && cameraView.width > 0 && cameraView.holder.surface?.isValid == true
+                    val isThermalActive = isThermalStreaming && cameraView.width > 0 && cameraView.isAvailable
 
                     if (isThermalActive) {
-                        val frame = cameraView.holder.surfaceFrame
-                        val srcRect = Rect(0, 0, frame.width(), frame.height())
                         try {
-                            PixelCopy.request(cameraView, srcRect, thermalAnalyzeBmp, { result ->
-                                if (result == PixelCopy.SUCCESS) {
-                                    val copy = thermalAnalyzeBmp.copy(Bitmap.Config.ARGB_8888, false)
-                                    dispatchFrameToVision(copy)
-                                } else {
-                                    isProcessingFrame = false
-                                }
-                            }, mainHandler)
+                            val bmp = cameraView.getBitmap(thermalAnalyzeBmp)
+                            if (bmp != null) {
+                                val copy = bmp.copy(Bitmap.Config.ARGB_8888, false)
+                                dispatchFrameToVision(copy)
+                            } else {
+                                isProcessingFrame = false
+                            }
                         } catch (e: Exception) {
                             isProcessingFrame = false
                         }
                     } else {
-                        // Тепловизор отключен -> ОПТИКУ НЕ СКАНИРУЕМ, рамки трекера удаляем
+                        // Если тепловизор отключен -> очищаем рамки, не трогаем оптику
                         if (crosshairOverlay.detectedTargets.isNotEmpty()) {
                             crosshairOverlay.detectedTargets = emptyList()
                             crosshairOverlay.invalidate()
@@ -212,17 +210,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initViews() {
-        cameraView.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) {
-                cameraHelper?.addSurface(holder.surface, false)
-            }
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        cameraView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+                val surface = Surface(surfaceTexture)
+                thermalSurface = surface
+                cameraHelper?.addSurface(surface, false)
                 updateOverlayBounds()
             }
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                cameraHelper?.removeSurface(holder.surface)
+
+            override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+                updateOverlayBounds()
             }
-        })
+
+            override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+                thermalSurface?.let { cameraHelper?.removeSurface(it) }
+                thermalSurface?.release()
+                thermalSurface = null
+                return true
+            }
+
+            override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {}
+        }
 
         phoneCameraView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             updateOverlayBounds()
@@ -230,7 +238,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Точное математическое ограничение ширины тепловизора (не превышает 70% контейнера)
+     * Точное вписывание 4:3 строго внутрь своего слота без наезда на соседний экран
      */
     private fun adjustThermalViewBounds() {
         val containerW = thermalContainer.width
@@ -244,9 +252,11 @@ class MainActivity : AppCompatActivity() {
         val fitH: Int
 
         if (containerRatio > targetRatio) {
+            // Контейнер шире, чем 4:3 -> вписываем по высоте
             fitH = containerH
             fitW = (containerH * targetRatio).toInt().coerceAtMost(containerW)
         } else {
+            // Контейнер уже, чем 4:3 -> вписываем по ширине
             fitW = containerW
             fitH = (containerW / targetRatio).toInt().coerceAtMost(containerH)
         }
@@ -343,7 +353,6 @@ class MainActivity : AppCompatActivity() {
             showResolutionDialog()
         }
 
-        // Кнопка ЮСТИРОВКА
         btnCalibrate.setOnClickListener {
             crosshairOverlay.isCalibrationMode = !crosshairOverlay.isCalibrationMode
             if (crosshairOverlay.isCalibrationMode) {
@@ -388,9 +397,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Жесткое деление по weightSum 1.0
-     */
     private fun setSplitRatio(weightThermal: Float, weightOptical: Float, modeLabel: String) {
         val lpT = thermalContainer.layoutParams as LinearLayout.LayoutParams
         val lpO = opticalContainer.layoutParams as LinearLayout.LayoutParams
@@ -467,7 +473,7 @@ class MainActivity : AppCompatActivity() {
                     isThermalStreaming = true
                     runOnUiThread { tvStatus.text = "FT640L: Поток активен" }
                     startPreview()
-                    cameraView.holder.surface?.let { surface ->
+                    thermalSurface?.let { surface ->
                         if (surface.isValid) {
                             addSurface(surface, false)
                         }
@@ -502,6 +508,7 @@ class MainActivity : AppCompatActivity() {
         isVisionRunning = false
         visionThread.quitSafely()
         alertManager.release()
+        thermalSurface?.release()
         cameraHelper?.release()
     }
 }
