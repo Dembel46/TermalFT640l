@@ -103,14 +103,15 @@ class MainActivity : AppCompatActivity() {
 
         alertManager = AlertManager(this)
 
-        cameraView.setAspectRatio(4, 3)
+        // Отключаем неконтролируемый расчет AspectRatioSurfaceView, управляем геометрией строго из кода
+        cameraView.setAspectRatio(0, 0)
 
         initVisionPipeline()
         initViews()
         initButtons()
         checkPermissionsAndInit()
 
-        // Старт в режиме 70/30
+        // Старт строго в режиме 70/30
         rootLayout.post {
             setSplitRatio(0.7f, 0.3f, "70/30")
         }
@@ -134,7 +135,7 @@ class MainActivity : AppCompatActivity() {
                             PixelCopy.request(cameraView, srcRect, thermalAnalyzeBmp, { result ->
                                 if (result == PixelCopy.SUCCESS) {
                                     val copy = thermalAnalyzeBmp.copy(Bitmap.Config.ARGB_8888, false)
-                                    dispatchFrameToVision(copy, true)
+                                    dispatchFrameToVision(copy, isThermal = true)
                                 } else {
                                     isProcessingFrame = false
                                 }
@@ -143,10 +144,10 @@ class MainActivity : AppCompatActivity() {
                             isProcessingFrame = false
                         }
                     } else {
-                        // Анализируем оптику только если тепловизор не активен
+                        // Если тепловизор не подключен — анализируем штатную камеру
                         val opticalBmp = phoneCameraView.bitmap
                         if (opticalBmp != null) {
-                            dispatchFrameToVision(opticalBmp, false)
+                            dispatchFrameToVision(opticalBmp, isThermal = false)
                         }
                     }
                 }
@@ -229,6 +230,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Точный математический расчет границ 4:3 внутри контейнера (исключает наезд на оптику)
+     */
     private fun adjustThermalViewBounds() {
         val containerW = thermalContainer.width
         val containerH = thermalContainer.height
@@ -241,11 +245,13 @@ class MainActivity : AppCompatActivity() {
         val fitH: Int
 
         if (containerRatio > targetRatio) {
+            // Контейнер шире, чем 4:3 -> вписываем по высоте, центрируем по горизонтали
             fitH = containerH
-            fitW = (containerH * targetRatio).toInt()
+            fitW = (containerH * targetRatio).toInt().coerceAtMost(containerW)
         } else {
+            // Контейнер уже, чем 4:3 -> вписываем по ширине, центрируем по вертикали
             fitW = containerW
-            fitH = (containerW / targetRatio).toInt()
+            fitH = (containerW / targetRatio).toInt().coerceAtMost(containerH)
         }
 
         val lp = cameraView.layoutParams as FrameLayout.LayoutParams
