@@ -255,8 +255,8 @@ class CrosshairView @JvmOverloads constructor(
         val isThermalVisible = thermalRect.width() > 0 && thermalRect.height() > 0
         val isOpticalVisible = phoneCameraView?.visibility == View.VISIBLE && opticalRect.width() > 0 && opticalRect.height() > 0
 
-        // 1. Отрисовка трекера строго на активном окне источника
-        if (detectedTargets.isNotEmpty()) {
+        // 1. Отрисовка рамок трекера строго на активном окне тепловизора
+        if (isThermalVisible && detectedTargets.isNotEmpty()) {
             val minSensorW = 9f / 640f
             val minSensorH = 9f / 512f
 
@@ -312,7 +312,7 @@ class CrosshairView @JvmOverloads constructor(
             drawFastReticle(canvas, cx, cy, if (isThermalReady) thermalShader else null)
         }
 
-        // 3. Прицел оптической камеры (полностью скрыт, если оптика выключена)
+        // 3. Прицел оптической камеры (полностью скрыт, если режим "ТЕПЛО 100%")
         if (isOpticalVisible) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
@@ -330,7 +330,7 @@ class CrosshairView @JvmOverloads constructor(
                 canvas.drawLine(cx - boxHalf, cy - boxHalf, cx - boxHalf, cy - boxHalf + arm, justCornersPaint)
 
                 canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf - arm, cy - boxHalf, justCornersPaint)
-                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf, cy - boxHalf + arm, justCornersPaint)
+                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf - arm, cy - boxHalf, justCornersPaint)
 
                 canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf + arm, cy + boxHalf, justCornersPaint)
                 canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf, cy + boxHalf - arm, justCornersPaint)
