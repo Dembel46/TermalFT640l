@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.RectF
 import kotlin.math.abs
+import kotlin.math.hypot
 
 enum class TargetType {
     MOVING,         // Движущийся объект (Красный)
@@ -18,8 +19,7 @@ data class DetectedTarget(
     val widthPx: Int,
     val heightPx: Int,
     val contrastScore: Float,
-    val type: TargetType,
-    val isThermalSource: Boolean
+    val type: TargetType
 )
 
 class ThermalVisionEngine {
@@ -30,7 +30,6 @@ class ThermalVisionEngine {
 
     private val rawLuma = IntArray(totalPixels)
     private val filteredLuma = IntArray(totalPixels)
-    private val bgLuma = FloatArray(totalPixels) // Адаптивная модель фона
     private val openedLuma = IntArray(totalPixels)
     private val candidateMask = BooleanArray(totalPixels)
     private val visited = BooleanArray(totalPixels)
@@ -39,18 +38,24 @@ class ThermalVisionEngine {
     private val rowMaxX = IntArray(procH)
 
     private var nextTargetId = 1
+
+    // Трекер траектории и удержания целей
     private val targetHistory = mutableMapOf<Int, TrackedTargetState>()
-    private var isBgInitialized = false
 
     private class TrackedTargetState(
         val id: Int,
+        var anchorX: Float,
+        var anchorY: Float,
+        var lastX: Float,
+        var lastY: Float,
         var smoothedBounds: RectF,
         var smoothedSilhouette: List<PointF>,
         var motionHoldFrames: Int = 0,
+        var stationaryFrames: Int = 0,
         var holdShapeCounter: Int = 0
     )
 
-    fun processFrame(frameBitmap: Bitmap, isThermal: Boolean): List<DetectedTarget> {
+    fun processFrame(frameBitmap: Bitmap): List<DetectedTarget> {
         val scaled = if (frameBitmap.width == procW && frameBitmap.height == procH) {
             frameBitmap
         } else {
@@ -71,7 +76,7 @@ class ThermalVisionEngine {
             rawLuma[i] = (r * 77 + g * 150 + b * 29) shr 8
         }
 
-        // Фильтр 3x3 для устранения аналогового шума тепловизора
+        // 3x3 фильтр подавления аналогового шума CVBS
         var sumLuma = 0L
         for (y in 0 until procH) {
             val row = y * procW
@@ -86,16 +91,8 @@ class ThermalVisionEngine {
                 }
                 filteredLuma[idx] = smooth
                 sumLuma += smooth
-
-                // Обновление адаптивной модели фона
-                if (!isBgInitialized) {
-                    bgLuma[idx] = smooth.toFloat()
-                } else {
-                    bgLuma[idx] = bgLuma[idx] * 0.92f + smooth * 0.08f
-                }
             }
         }
-        isBgInitialized = true
 
         val avgSceneLuma = (sumLuma / totalPixels).toInt()
 
@@ -132,10 +129,10 @@ class ThermalVisionEngine {
             }
         }
 
-        val minDiff = 20
+        val minDiff = 22
         for (i in 0 until totalPixels) {
             val localDiff = filteredLuma[i] - openedLuma[i]
-            val isHighContrast = localDiff >= minDiff && filteredLuma[i] > (avgSceneLuma + 10)
+            val isHighContrast = localDiff >= minDiff && filteredLuma[i] > (avgSceneLuma + 12)
             candidateMask[i] = isHighContrast
             visited[i] = false
         }
@@ -223,14 +220,15 @@ class ThermalVisionEngine {
                         }
                     }
 
-                    if (count in 4..2500) {
+                    // Отсекаем одиночные шумы (меньше 5 px)
+                    if (count in 5..2500) {
                         rawBlobs.add(RawBlob(minX, minY, maxX, maxY, maxL, count, silhouette))
                     }
                 }
             }
         }
 
-        // 3. Анализ движения относительно накопительного фона с 3-секундным удержанием
+        // 3. Траекторный трекинг (замер физического перемещения центра масс)
         val finalTargets = mutableListOf<DetectedTarget>()
         val activeIds = mutableSetOf<Int>()
 
@@ -238,20 +236,6 @@ class ThermalVisionEngine {
             val bw = blob.maxX - blob.minX + 1
             val bh = blob.maxY - blob.minY + 1
             val contrast = (blob.maxLuma - avgSceneLuma).toFloat()
-
-            // Замер разницы текущего объекта с моделью фона
-            var motionPixels = 0
-            for (by in blob.minY..blob.maxY) {
-                val r = by * procW
-                for (bx in blob.minX..blob.maxX) {
-                    val idx = r + bx
-                    val bgDiff = abs(filteredLuma[idx] - bgLuma[idx])
-                    if (bgDiff > 18) motionPixels++
-                }
-            }
-
-            // Движение: объект существенно отличается от накопительного фона сцены
-            val isCurrentlyMoving = motionPixels >= 6 && (motionPixels.toFloat() / blob.pixelCount) >= 0.16f
 
             val rawBounds = RectF(
                 blob.minX.toFloat() / procW,
@@ -263,11 +247,10 @@ class ThermalVisionEngine {
             val curCenterY = rawBounds.centerY()
 
             var assignedId = -1
-            var bestDist = 0.14f
+            var bestDist = 0.15f
             for ((id, hist) in targetHistory) {
-                val dx = abs(hist.smoothedBounds.centerX() - curCenterX)
-                val dy = abs(hist.smoothedBounds.centerY() - curCenterY)
-                val dist = dx + dy
+                val dist = hypot((hist.smoothedBounds.centerX() - curCenterX).toDouble(),
+                                 (hist.smoothedBounds.centerY() - curCenterY).toDouble()).toFloat()
                 if (dist < bestDist) {
                     bestDist = dist
                     assignedId = id
@@ -283,18 +266,38 @@ class ThermalVisionEngine {
             if (track == null) {
                 track = TrackedTargetState(
                     id = assignedId,
+                    anchorX = curCenterX,
+                    anchorY = curCenterY,
+                    lastX = curCenterX,
+                    lastY = curCenterY,
                     smoothedBounds = RectF(rawBounds),
                     smoothedSilhouette = blob.silhouettePoints
                 )
                 targetHistory[assignedId] = track
             }
 
-            // УДЕРЖАНИЕ МЕТКИ ДВИЖЕНИЯ: 30 кадров (~3 секунды)
-            if (isCurrentlyMoving) {
-                track.motionHoldFrames = 30
+            // Замер смещения относительно предыдущего кадра и базового "якоря"
+            val instDist = hypot((curCenterX - track.lastX).toDouble(), (curCenterY - track.lastY).toDouble()).toFloat()
+            val anchorDist = hypot((curCenterX - track.anchorX).toDouble(), (curCenterY - track.anchorY).toDouble()).toFloat()
+
+            track.lastX = curCenterX
+            track.lastY = curCenterY
+
+            // ДЕТЕКЦИЯ ДВИЖЕНИЯ: объект действительно сдвинулся больше чем случайный шум
+            if (instDist > 0.008f || anchorDist > 0.022f) {
+                track.motionHoldFrames = 30 // Удержание красным 3 секунды (30 кадров)
+                track.stationaryFrames = 0
+                track.anchorX = curCenterX
+                track.anchorY = curCenterY
+            } else {
+                track.stationaryFrames++
+                if (track.stationaryFrames > 8) {
+                    track.anchorX = curCenterX
+                    track.anchorY = curCenterY
+                }
             }
 
-            val isMotionActive = track.motionHoldFrames > 0
+            val isMoving = track.motionHoldFrames > 0
             if (track.motionHoldFrames > 0) {
                 track.motionHoldFrames--
             }
@@ -313,11 +316,11 @@ class ThermalVisionEngine {
             }
 
             val targetType = when {
-                isMotionActive -> TargetType.MOVING // КРАСНЫЙ (при движении и еще 3 секунды после)
+                isMoving -> TargetType.MOVING // КРАСНЫЙ (при движении и еще 3 сек после)
                 (bh >= bw * 1.25f && bh >= 9) || (bw >= bh * 1.3f && bw >= 11) || blob.pixelCount >= 30 ->
-                    TargetType.HUMAN_VEHICLE // БЛЕДНО-ЖЕЛТЫЙ (статичный человек / техника)
+                    TargetType.HUMAN_VEHICLE // БЛЕДНО-ЖЕЛТЫЙ (статичный человек / транспорт)
                 else ->
-                    TargetType.OTHER // БЛЕДНО-ЗЕЛЕНЫЙ (иные теплые объекты)
+                    TargetType.OTHER // БЛЕДНО-ЗЕЛЕНЫЙ (иные статичные объекты)
             }
 
             finalTargets.add(
@@ -328,8 +331,7 @@ class ThermalVisionEngine {
                     widthPx = bw,
                     heightPx = bh,
                     contrastScore = contrast,
-                    type = targetType,
-                    isThermalSource = isThermal
+                    type = targetType
                 )
             )
         }
