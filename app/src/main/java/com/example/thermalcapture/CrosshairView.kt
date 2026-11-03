@@ -192,25 +192,17 @@ class CrosshairView @JvmOverloads constructor(
         }
     }
 
-    /**
-     * Быстрый аппаратный захват негатива через TextureView (без PixelCopy и без задержек)
-     */
     private fun updateThermalFast() {
         val tView = thermalCameraView ?: return
         if (tView.visibility != View.VISIBLE || !tView.isAvailable || tView.width <= 0 || tView.height <= 0) return
 
         try {
             tView.getBitmap(thermalRawBitmap)
-
             thermalRawBitmap.getPixels(thermalRawPixels, 0, negSize, 0, 0, negSize, negSize)
 
             for (i in 0 until totalNegPixels) {
                 val p = thermalRawPixels[i]
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                val luma = (r * 77 + g * 150 + b * 29) shr 8
-
+                val luma = (p and 0xFF)
                 val rawNeg = 255 - luma
                 val contrastNeg = if (rawNeg > 128) {
                     (128 + (rawNeg - 128) * 1.4f).toInt().coerceIn(0, 255)
@@ -298,7 +290,7 @@ class CrosshairView @JvmOverloads constructor(
             drawFastReticle(canvas, cx, cy, if (isThermalReady) thermalShader else null)
         }
 
-        // 3. Прицел оптической камеры (полностью скрыт в режиме "ТЕПЛО 100%")
+        // 3. Прицел оптической камеры (полностью скрыт, если режим "ТЕПЛО 100%")
         if (isOpticalVisible) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
@@ -400,6 +392,10 @@ class CrosshairView @JvmOverloads constructor(
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
     }
+
+    // Служебные переменные для перетаскивания прицела
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!isCalibrationMode) return false
