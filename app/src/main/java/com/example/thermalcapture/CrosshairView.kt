@@ -8,15 +8,13 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
-import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
 import android.view.MotionEvent
-import android.view.PixelCopy
-import android.view.SurfaceView
+import android.view.TextureView
 import android.view.View
 import androidx.camera.view.PreviewView
 import kotlin.math.roundToInt
@@ -103,7 +101,7 @@ class CrosshairView @JvmOverloads constructor(
     var opticalRect = RectF()
 
     var phoneCameraView: PreviewView? = null
-    var thermalCameraView: View? = null
+    var thermalCameraView: TextureView? = null
 
     var detectedTargets: List<DetectedTarget> = emptyList()
 
@@ -194,65 +192,58 @@ class CrosshairView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Быстрый аппаратный захват негатива через TextureView (без PixelCopy и без задержек)
+     */
     private fun updateThermalFast() {
         val tView = thermalCameraView ?: return
-        val surface = tView.holder.surface ?: return
-        if (tView.visibility != View.VISIBLE || !surface.isValid || tView.width <= 0 || tView.height <= 0) return
-
-        val frame = tView.holder.surfaceFrame
-        val scaleX = frame.width().toFloat() / tView.width
-        val scaleY = frame.height().toFloat() / tView.height
-
-        val cx = thermalRect.centerX() - tView.x
-        val cy = thermalRect.centerY() - tView.y
-
-        val surfCx = (cx * scaleX).roundToInt()
-        val surfCy = (cy * scaleY).roundToInt()
-        val half = negSize / 2
-
-        val srcRect = Rect(
-            (surfCx - half).coerceIn(0, (frame.width() - negSize).coerceAtLeast(0)),
-            (surfCy - half).coerceIn(0, (frame.height() - negSize).coerceAtLeast(0)),
-            (surfCx + half).coerceIn(negSize, frame.width()),
-            (surfCy + half).coerceIn(negSize, frame.height())
-        )
+        if (tView.visibility != View.VISIBLE || !tView.isAvailable || tView.width <= 0 || tView.height <= 0) return
 
         try {
-            PixelCopy.request(tView, srcRect, thermalRawBitmap, { result ->
-                if (result == PixelCopy.SUCCESS) {
-                    thermalRawBitmap.getPixels(thermalRawPixels, 0, negSize, 0, 0, negSize, negSize)
+            tView.getBitmap(thermalRawBitmap)
 
-                    for (i in 0 until totalNegPixels) {
-                        val luma = thermalRawPixels[i] and 0xFF
-                        val rawNeg = 255 - luma
-                        val contrastNeg = if (rawNeg > 128) {
-                            (128 + (rawNeg - 128) * 1.4f).toInt().coerceIn(0, 255)
-                        } else {
-                            (128 - (128 - rawNeg) * 1.4f).toInt().coerceIn(0, 255)
-                        }
-                        thermalNegPixels[i] = 0xFF000000.toInt() or (contrastNeg shl 16) or (contrastNeg shl 8) or contrastNeg
-                    }
+            thermalRawBitmap.getPixels(thermalRawPixels, 0, negSize, 0, 0, negSize, negSize)
 
-                    thermalNegativeBitmap.setPixels(thermalNegPixels, 0, negSize, 0, 0, negSize, negSize)
+            for (i in 0 until totalNegPixels) {
+                val p = thermalRawPixels[i]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                val luma = (r * 77 + g * 150 + b * 29) shr 8
 
-                    val screenLeft = (srcRect.left / scaleX) + tView.x
-                    val screenTop = (srcRect.top / scaleY) + tView.y
-
-                    thermalMatrix.reset()
-                    thermalMatrix.setScale(1f / scaleX, 1f / scaleY)
-                    thermalMatrix.postTranslate(screenLeft, screenTop)
-                    thermalShader.setLocalMatrix(thermalMatrix)
-
-                    isThermalReady = true
+                val rawNeg = 255 - luma
+                val contrastNeg = if (rawNeg > 128) {
+                    (128 + (rawNeg - 128) * 1.4f).toInt().coerceIn(0, 255)
+                } else {
+                    (128 - (128 - rawNeg) * 1.4f).toInt().coerceIn(0, 255)
                 }
-            }, sampleHandler)
+                thermalNegPixels[i] = 0xFF000000.toInt() or (contrastNeg shl 16) or (contrastNeg shl 8) or contrastNeg
+            }
+
+            thermalNegativeBitmap.setPixels(thermalNegPixels, 0, negSize, 0, 0, negSize, negSize)
+
+            val scaleX = thermalRawBitmap.width.toFloat() / tView.width.toFloat()
+            val scaleY = thermalRawBitmap.height.toFloat() / tView.height.toFloat()
+
+            val cx = thermalRect.centerX() - tView.x
+            val cy = thermalRect.centerY() - tView.y
+
+            val screenLeft = tView.x + cx - (negSize / scaleX) / 2f
+            val screenTop = tView.y + cy - (negSize / scaleY) / 2f
+
+            thermalMatrix.reset()
+            thermalMatrix.setScale(1f / scaleX, 1f / scaleY)
+            thermalMatrix.postTranslate(screenLeft, screenTop)
+            thermalShader.setLocalMatrix(thermalMatrix)
+
+            isThermalReady = true
         } catch (e: Exception) {}
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        val isThermalVisible = thermalRect.width() > 0 && thermalRect.height() > 0
+        val isThermalVisible = thermalCameraView?.visibility == View.VISIBLE && thermalRect.width() > 0 && thermalRect.height() > 0
         val isOpticalVisible = phoneCameraView?.visibility == View.VISIBLE && opticalRect.width() > 0 && opticalRect.height() > 0
 
         // 1. Отрисовка рамок трекера СТРОГО на тепловизоре
@@ -314,41 +305,38 @@ class CrosshairView @JvmOverloads constructor(
 
             drawFastReticle(canvas, cx, cy, if (isOpticalReady) opticalShader else null)
 
-            // РЕЖИМ "ЮСТИРОВКА": рамка строго удерживается внутри экрана, правые углы не обрезаются
+            // РЕЖИМ "ЮСТИРОВКА": аккуратные 4 угла без обрезки краев
             if (isCalibrationMode) {
-                val distR = opticalRect.right - cx - 10f * density
-                val distL = cx - opticalRect.left - 10f * density
-                val distT = cy - opticalRect.top - 20f * density
-                val distB = opticalRect.bottom - cy - 10f * density
+                val left = (cx - reticleLength - 8f * density).coerceAtLeast(opticalRect.left + 6f * density)
+                val right = (cx + reticleLength + 8f * density).coerceAtMost(opticalRect.right - 6f * density)
+                val top = (cy - reticleLength - 8f * density).coerceAtLeast(opticalRect.top + 24f * density)
+                val bottom = (cy + reticleLength + 8f * density).coerceAtMost(opticalRect.bottom - 6f * density)
+                val arm = 15f * density
 
-                val maxRadius = minOf(distR, distL, distT, distB).coerceAtLeast(15f * density)
-                val boxHalf = minOf(reticleLength + 8f * density, maxRadius)
-                val arm = (boxHalf * 0.4f).coerceAtLeast(8f * density)
+                // Верхний левый угол
+                canvas.drawLine(left, top, left + arm, top, justCornersPaint)
+                canvas.drawLine(left, top, left, top + arm, justCornersPaint)
 
-                // Верхний левый
-                canvas.drawLine(cx - boxHalf, cy - boxHalf, cx - boxHalf + arm, cy - boxHalf, justCornersPaint)
-                canvas.drawLine(cx - boxHalf, cy - boxHalf, cx - boxHalf, cy - boxHalf + arm, justCornersPaint)
+                // Верхний правый угол
+                canvas.drawLine(right, top, right - arm, top, justCornersPaint)
+                canvas.drawLine(right, top, right, top + arm, justCornersPaint)
 
-                // Верхний правый
-                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf - arm, cy - boxHalf, justCornersPaint)
-                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf, cy - boxHalf + arm, justCornersPaint)
+                // Нижний левый угол
+                canvas.drawLine(left, bottom, left + arm, bottom, justCornersPaint)
+                canvas.drawLine(left, bottom, left, bottom - arm, justCornersPaint)
 
-                // Нижний левый
-                canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf + arm, cy + boxHalf, justCornersPaint)
-                canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf, cy + boxHalf - arm, justCornersPaint)
-
-                // Нижний правый
-                canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf - arm, cy + boxHalf, justCornersPaint)
-                canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf, cy + boxHalf - arm, justCornersPaint)
+                // Нижний правый угол
+                canvas.drawLine(right, bottom, right - arm, bottom, justCornersPaint)
+                canvas.drawLine(right, bottom, right, bottom - arm, justCornersPaint)
 
                 // Плашка "ПЕРЕМЕЩАЙ"
                 val text = "ПЕРЕМЕЩАЙ"
                 val tW = justTextPaint.measureText(text)
                 val tH = justTextPaint.textSize
-                val tagY = (cy - boxHalf - 8f * density).coerceAtLeast(opticalRect.top + tH + 6f * density)
-                val tagX = (cx - tW / 2f).coerceIn(opticalRect.left + 8f * density, opticalRect.right - tW - 8f * density)
+                val tagX = ((left + right) / 2f - tW / 2f).coerceIn(opticalRect.left + 6f * density, opticalRect.right - tW - 6f * density)
+                val tagY = top - 6f * density
 
-                canvas.drawRect(tagX - 6f * density, tagY - tH - 4f * density, tagX + tW + 6f * density, tagY + 3f * density, justBgPaint)
+                canvas.drawRect(tagX - 5f * density, tagY - tH - 3f * density, tagX + tW + 5f * density, tagY + 3f * density, justBgPaint)
                 canvas.drawText(text, tagX, tagY, justTextPaint)
             }
         }
@@ -412,9 +400,6 @@ class CrosshairView @JvmOverloads constructor(
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
     }
-
-    private var lastTouchX = 0f
-    private var lastTouchY = 0f
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!isCalibrationMode) return false
