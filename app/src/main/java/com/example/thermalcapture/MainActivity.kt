@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbDevice
@@ -18,7 +19,6 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -36,7 +36,7 @@ import com.herohan.uvcapp.ICameraHelper
 class MainActivity : AppCompatActivity() {
 
     private lateinit var rootLayout: ConstraintLayout
-    private lateinit var cameraContainer: LinearLayout
+    private lateinit var cameraContainer: FrameLayout
     private lateinit var thermalContainer: FrameLayout
     private lateinit var opticalContainer: FrameLayout
     private lateinit var cameraView: TextureView
@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnResolution: Button
     private lateinit var btnTracking: Button
     private lateinit var btnThermalFullscreen: Button
+    private lateinit var btnHybrid: Button
 
     private var cameraHelper: ICameraHelper? = null
     private var thermalSurface: Surface? = null
@@ -68,9 +69,10 @@ class MainActivity : AppCompatActivity() {
 
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
 
-    // Режимы: 0 - 70/30 (по умолчанию), 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
+    // Режимы: 0 - 70/30, 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
     private var displayMode = 0
     private var isThermalFullscreen = false
+    private var isHybridModeActive = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,6 +94,7 @@ class MainActivity : AppCompatActivity() {
         btnResolution = findViewById(R.id.btnResolution)
         btnTracking = findViewById(R.id.btnTracking)
         btnThermalFullscreen = findViewById(R.id.btnThermalFullscreen)
+        btnHybrid = findViewById(R.id.btnHybrid)
 
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
@@ -100,6 +103,13 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
+
+        // Связка вертикального регулятора прозрачности гибрида
+        crosshairOverlay.onHybridAlphaChanged = { alpha ->
+            if (isHybridModeActive) {
+                cameraView.alpha = alpha
+            }
+        }
 
         alertManager = AlertManager(this)
 
@@ -114,9 +124,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Аналитика работает строго по тепловизору
-     */
     private fun initVisionPipeline() {
         visionThread = HandlerThread("VisionProcessingThread").apply { start() }
         visionHandler = Handler(visionThread.looper)
@@ -141,7 +148,6 @@ class MainActivity : AppCompatActivity() {
                             isProcessingFrame = false
                         }
                     } else {
-                        // Если тепловизор отключен -> очищаем рамки, не трогаем оптику
                         if (crosshairOverlay.detectedTargets.isNotEmpty()) {
                             crosshairOverlay.detectedTargets = emptyList()
                             crosshairOverlay.invalidate()
@@ -238,7 +244,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Точное вписывание 4:3 строго внутрь своего слота без наезда на соседний экран
+     * Расчет 4:3 кропа тепловизора строго по центру
      */
     private fun adjustThermalViewBounds() {
         val containerW = thermalContainer.width
@@ -246,19 +252,22 @@ class MainActivity : AppCompatActivity() {
         if (containerW <= 0 || containerH <= 0) return
 
         val targetRatio = 4f / 3f
-        val containerRatio = containerW.toFloat() / containerH.toFloat()
-
         val fitW: Int
         val fitH: Int
 
-        if (containerRatio > targetRatio) {
-            // Контейнер шире, чем 4:3 -> вписываем по высоте
-            fitH = containerH
-            fitW = (containerH * targetRatio).toInt().coerceAtMost(containerW)
+        if (isHybridModeActive) {
+            // В режиме ГИБРИД: тепловизор занимает 85% высоты экрана с пропорцией 4:3 по центру
+            fitH = (containerH * 0.9f).toInt()
+            fitW = (fitH * targetRatio).toInt().coerceAtMost(containerW)
         } else {
-            // Контейнер уже, чем 4:3 -> вписываем по ширине
-            fitW = containerW
-            fitH = (containerW / targetRatio).toInt().coerceAtMost(containerH)
+            val containerRatio = containerW.toFloat() / containerH.toFloat()
+            if (containerRatio > targetRatio) {
+                fitH = containerH
+                fitW = (containerH * targetRatio).toInt().coerceAtMost(containerW)
+            } else {
+                fitW = containerW
+                fitH = ((fitW * 3f) / 4f).toInt().coerceAtMost(containerH)
+            }
         }
 
         val lp = cameraView.layoutParams as FrameLayout.LayoutParams
@@ -311,6 +320,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
+        // КНОПКА "ГИБРИД"
+        btnHybrid.setOnClickListener {
+            isHybridModeActive = !isHybridModeActive
+            crosshairOverlay.isHybridMode = isHybridModeActive
+
+            if (isHybridModeActive) {
+                btnHybrid.text = "ГИБРИД: ВКЛ"
+                btnHybrid.setBackgroundColor(0xFF0099CC.toInt())
+                applyHybridMode()
+                Toast.makeText(this, "Проведите пальцем вверх/вниз слева для настройки прозрачности", Toast.LENGTH_SHORT).show()
+            } else {
+                btnHybrid.text = "ГИБРИД"
+                btnHybrid.setBackgroundColor(0xFF444444.toInt())
+                cameraView.alpha = 1.0f
+                setSplitRatio(0.7f, 0.3f, "70/30")
+            }
+        }
+
         btnTracking.setOnClickListener {
             isTrackingEnabled = !isTrackingEnabled
             if (isTrackingEnabled) {
@@ -326,6 +353,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnThermalFullscreen.setOnClickListener {
+            if (isHybridModeActive) {
+                isHybridModeActive = false
+                crosshairOverlay.isHybridMode = false
+                btnHybrid.text = "ГИБРИД"
+                btnHybrid.setBackgroundColor(0xFF444444.toInt())
+                cameraView.alpha = 1.0f
+            }
+
             if (!isThermalFullscreen) {
                 isThermalFullscreen = true
                 btnThermalFullscreen.text = "⤡"
@@ -338,6 +373,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnMode.setOnClickListener {
+            if (isHybridModeActive) {
+                isHybridModeActive = false
+                crosshairOverlay.isHybridMode = false
+                btnHybrid.text = "ГИБРИД"
+                btnHybrid.setBackgroundColor(0xFF444444.toInt())
+                cameraView.alpha = 1.0f
+            }
+
             displayMode = (displayMode + 1) % 3
             isThermalFullscreen = (displayMode == 1)
             btnThermalFullscreen.text = if (isThermalFullscreen) "⤡" else "⛶"
@@ -353,6 +396,7 @@ class MainActivity : AppCompatActivity() {
             showResolutionDialog()
         }
 
+        // Кнопка ЮСТИРОВКА
         btnCalibrate.setOnClickListener {
             crosshairOverlay.isCalibrationMode = !crosshairOverlay.isCalibrationMode
             if (crosshairOverlay.isCalibrationMode) {
@@ -397,23 +441,85 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Режим ГИБРИД: оптика на весь экран, тепловизор по центру с настраиваемой прозрачностью
+     */
+    private fun applyHybridMode() {
+        val screenW = cameraContainer.width
+        val screenH = cameraContainer.height
+
+        // Оптика во весь экран на заднем плане
+        val lpO = opticalContainer.layoutParams as FrameLayout.LayoutParams
+        lpO.width = FrameLayout.LayoutParams.MATCH_PARENT
+        lpO.height = FrameLayout.LayoutParams.MATCH_PARENT
+        lpO.gravity = Gravity.NO_GRAVITY
+        opticalContainer.visibility = View.VISIBLE
+        opticalContainer.layoutParams = lpO
+
+        // Тепловизор поверх оптики по центру
+        val lpT = thermalContainer.layoutParams as FrameLayout.LayoutParams
+        lpT.width = FrameLayout.LayoutParams.MATCH_PARENT
+        lpT.height = FrameLayout.LayoutParams.MATCH_PARENT
+        lpT.gravity = Gravity.CENTER
+        thermalContainer.visibility = View.VISIBLE
+        thermalContainer.layoutParams = lpT
+
+        cameraView.alpha = crosshairOverlay.hybridAlpha
+
+        cameraContainer.requestLayout()
+        rootLayout.post { updateOverlayBounds() }
+    }
+
+    /**
+     * Режимы с разделением экрана (70/30, 100% Тепло, 100% Оптика)
+     */
     private fun setSplitRatio(weightThermal: Float, weightOptical: Float, modeLabel: String) {
-        val lpT = thermalContainer.layoutParams as LinearLayout.LayoutParams
-        val lpO = opticalContainer.layoutParams as LinearLayout.LayoutParams
+        cameraView.alpha = 1.0f
 
-        lpT.width = 0
-        lpO.width = 0
-        lpT.weight = weightThermal
-        lpO.weight = weightOptical
+        val screenW = cameraContainer.width
+        val screenH = cameraContainer.height
+        if (screenW <= 0 || screenH <= 0) {
+            rootLayout.post { setSplitRatio(weightThermal, weightOptical, modeLabel) }
+            return
+        }
 
-        thermalContainer.visibility = if (weightThermal > 0f) View.VISIBLE else View.GONE
-        opticalContainer.visibility = if (weightOptical > 0f) View.VISIBLE else View.GONE
+        val lpT = thermalContainer.layoutParams as FrameLayout.LayoutParams
+        val lpO = opticalContainer.layoutParams as FrameLayout.LayoutParams
+
+        if (weightThermal > 0f && weightOptical > 0f) {
+            // Режим 70/30: тепловизор слева, оптика справа (без наложений)
+            val thermalW = (screenW * weightThermal).toInt()
+            val opticalW = screenW - thermalW
+
+            lpT.width = thermalW
+            lpT.height = FrameLayout.LayoutParams.MATCH_PARENT
+            lpT.gravity = Gravity.START
+            thermalContainer.visibility = View.VISIBLE
+
+            lpO.width = opticalW
+            lpO.height = FrameLayout.LayoutParams.MATCH_PARENT
+            lpO.gravity = Gravity.END
+            opticalContainer.visibility = View.VISIBLE
+        } else if (weightThermal > 0f) {
+            // ТЕПЛО 100%
+            lpT.width = FrameLayout.LayoutParams.MATCH_PARENT
+            lpT.height = FrameLayout.LayoutParams.MATCH_PARENT
+            lpT.gravity = Gravity.CENTER
+            thermalContainer.visibility = View.VISIBLE
+            opticalContainer.visibility = View.GONE
+        } else {
+            // ОПТИКА 100%
+            lpO.width = FrameLayout.LayoutParams.MATCH_PARENT
+            lpO.height = FrameLayout.LayoutParams.MATCH_PARENT
+            lpO.gravity = Gravity.CENTER
+            opticalContainer.visibility = View.VISIBLE
+            thermalContainer.visibility = View.GONE
+        }
 
         thermalContainer.layoutParams = lpT
         opticalContainer.layoutParams = lpO
 
         btnMode.text = modeLabel
-
         cameraContainer.requestLayout()
         rootLayout.post { updateOverlayBounds() }
     }
