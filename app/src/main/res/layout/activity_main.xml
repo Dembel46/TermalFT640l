@@ -7,7 +7,7 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Горизонтальный контейнер с аппаратным делением 70/30 -->
+    <!-- Контейнер с жестким аппаратным делением 70/30 через weightSum -->
     <LinearLayout
         android:id="@+id/cameraContainer"
         android:layout_width="0dp"
@@ -30,8 +30,9 @@
 
             <SurfaceView
                 android:id="@+id/svUvcCamera"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent" />
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center" />
         </FrameLayout>
 
         <!-- 2. Слот оптики (строго 30%) -->
@@ -49,7 +50,7 @@
         </FrameLayout>
     </LinearLayout>
 
-    <!-- Кнопка "Во весь экран" на окне тепловизора -->
+    <!-- Кнопка "Во весь экран" -->
     <Button
         android:id="@+id/btnThermalFullscreen"
         android:layout_width="40dp"
