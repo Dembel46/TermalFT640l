@@ -103,7 +103,7 @@ class CrosshairView @JvmOverloads constructor(
     var opticalRect = RectF()
 
     var phoneCameraView: PreviewView? = null
-    var thermalCameraView: SurfaceView? = null
+    var thermalCameraView: View? = null
 
     var detectedTargets: List<DetectedTarget> = emptyList()
 
