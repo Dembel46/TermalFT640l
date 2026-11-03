@@ -7,40 +7,21 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Контейнер с аппаратным делением строго 70/30 -->
-    <LinearLayout
+    <!-- Базовый контейнер видеопотоков (поддерживает и 70/30, и наложение слоев в Гибриде) -->
+    <FrameLayout
         android:id="@+id/cameraContainer"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:baselineAligned="false"
-        android:orientation="horizontal"
-        android:weightSum="1.0"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
-        <!-- 1. Слот тепловизора (строго 70%, TextureView исключает наезд на соседнее окно) -->
-        <FrameLayout
-            android:id="@+id/thermalContainer"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="0.7"
-            android:background="#000000">
-
-            <TextureView
-                android:id="@+id/svUvcCamera"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center" />
-        </FrameLayout>
-
-        <!-- 2. Слот оптики (строго 30%) -->
+        <!-- 1. Слот оптики (в гибриде — фоновый слой на весь экран) -->
         <FrameLayout
             android:id="@+id/opticalContainer"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:layout_weight="0.3"
             android:background="#000000">
 
             <androidx.camera.view.PreviewView
@@ -49,9 +30,23 @@
                 android:layout_height="match_parent"
                 app:implementationMode="compatible" />
         </FrameLayout>
-    </LinearLayout>
 
-    <!-- Кнопка "Во весь экран" на окне тепловизора -->
+        <!-- 2. Слот тепловизора (поверх оптики, центрированный 4:3 кроп с альфа-каналом) -->
+        <FrameLayout
+            android:id="@+id/thermalContainer"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#00000000">
+
+            <TextureView
+                android:id="@+id/svUvcCamera"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center" />
+        </FrameLayout>
+    </FrameLayout>
+
+    <!-- Кнопка "Во весь экран" -->
     <Button
         android:id="@+id/btnThermalFullscreen"
         android:layout_width="40dp"
@@ -67,7 +62,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Слой прицела и рамок трекера -->
+    <!-- Слой прицела, трекера и вертикального ползунка гибрида -->
     <com.example.thermalcapture.CrosshairView
         android:id="@+id/crosshairOverlay"
         android:layout_width="match_parent"
@@ -100,6 +95,16 @@
         android:orientation="horizontal"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
+
+        <Button
+            android:id="@+id/btnHybrid"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginEnd="4dp"
+            android:backgroundTint="#444444"
+            android:text="ГИБРИД"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp" />
 
         <Button
             android:id="@+id/btnTracking"
