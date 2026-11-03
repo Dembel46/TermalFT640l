@@ -307,7 +307,7 @@ class CrosshairView @JvmOverloads constructor(
             drawFastReticle(canvas, cx, cy, if (isThermalReady) thermalShader else null)
         }
 
-        // 3. Прицел оптической камеры (полностью скрыт, если режим "ТЕПЛО 100%")
+        // 3. Прицел оптической камеры (полностью скрыт, если оптика выключена)
         if (isOpticalVisible) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
