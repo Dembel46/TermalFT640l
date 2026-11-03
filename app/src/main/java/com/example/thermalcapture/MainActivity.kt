@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.view.Gravity
 import android.view.PixelCopy
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -95,7 +96,6 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
-        // Загрузка сохраненных координат юстировки
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
@@ -114,7 +114,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Аналитика работает ИСКЛЮЧИТЕЛЬНО по кадрам с тепловизора
+     * Аналитика работает ИСКЛЮЧИТЕЛЬНО по тепловизору
      */
     private fun initVisionPipeline() {
         visionThread = HandlerThread("VisionProcessingThread").apply { start() }
@@ -143,7 +143,7 @@ class MainActivity : AppCompatActivity() {
                             isProcessingFrame = false
                         }
                     } else {
-                        // Тепловизор отключен -> ОПТИКУ НЕ ТРОГАЕМ, рамки трекера удаляем
+                        // Тепловизор отключен -> ОПТИКУ НЕ СКАНИРУЕМ, рамки трекера удаляем
                         if (crosshairOverlay.detectedTargets.isNotEmpty()) {
                             crosshairOverlay.detectedTargets = emptyList()
                             crosshairOverlay.invalidate()
@@ -229,7 +229,40 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Точное математическое ограничение ширины тепловизора (не превышает 70% контейнера)
+     */
+    private fun adjustThermalViewBounds() {
+        val containerW = thermalContainer.width
+        val containerH = thermalContainer.height
+        if (containerW <= 0 || containerH <= 0) return
+
+        val targetRatio = 4f / 3f
+        val containerRatio = containerW.toFloat() / containerH.toFloat()
+
+        val fitW: Int
+        val fitH: Int
+
+        if (containerRatio > targetRatio) {
+            fitH = containerH
+            fitW = (containerH * targetRatio).toInt().coerceAtMost(containerW)
+        } else {
+            fitW = containerW
+            fitH = (containerW / targetRatio).toInt().coerceAtMost(containerH)
+        }
+
+        val lp = cameraView.layoutParams as FrameLayout.LayoutParams
+        if (lp.width != fitW || lp.height != fitH) {
+            lp.width = fitW
+            lp.height = fitH
+            lp.gravity = Gravity.CENTER
+            cameraView.layoutParams = lp
+        }
+    }
+
     private fun updateOverlayBounds() {
+        adjustThermalViewBounds()
+
         if (thermalContainer.visibility == View.VISIBLE && cameraView.width > 0 && cameraView.height > 0) {
             val locT = IntArray(2)
             cameraView.getLocationOnScreen(locT)
@@ -282,7 +315,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Кнопка "Во весь экран"
         btnThermalFullscreen.setOnClickListener {
             if (!isThermalFullscreen) {
                 isThermalFullscreen = true
@@ -357,7 +389,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Аппаратное переключение пропорций: строго 0dp ширины + вес
+     * Жесткое деление по weightSum 1.0
      */
     private fun setSplitRatio(weightThermal: Float, weightOptical: Float, modeLabel: String) {
         val lpT = thermalContainer.layoutParams as LinearLayout.LayoutParams
