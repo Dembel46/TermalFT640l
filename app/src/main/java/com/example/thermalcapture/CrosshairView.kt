@@ -307,38 +307,46 @@ class CrosshairView @JvmOverloads constructor(
             drawFastReticle(canvas, cx, cy, if (isThermalReady) thermalShader else null)
         }
 
-        // 3. Прицел оптической камеры (полностью скрыт, если оптика выключена)
+        // 3. Прицел оптической камеры (полностью скрыт в режиме "ТЕПЛО 100%")
         if (isOpticalVisible) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
 
             drawFastReticle(canvas, cx, cy, if (isOpticalReady) opticalShader else null)
 
-            // РЕЖИМ "ЮСТИРОВКА": аккуратные 4 угла без обрезки краев
+            // РЕЖИМ "ЮСТИРОВКА": рамка строго удерживается внутри экрана, правые углы не обрезаются
             if (isCalibrationMode) {
-                val maxAllowedHalf = (opticalRect.width() / 2f - 8f * density).coerceAtLeast(20f * density)
-                val boxHalf = (reticleLength + 10f * density).coerceAtMost(maxAllowedHalf)
-                val arm = 15f * density
+                val distR = opticalRect.right - cx - 10f * density
+                val distL = cx - opticalRect.left - 10f * density
+                val distT = cy - opticalRect.top - 20f * density
+                val distB = opticalRect.bottom - cy - 10f * density
 
-                // Уголки
+                val maxRadius = minOf(distR, distL, distT, distB).coerceAtLeast(15f * density)
+                val boxHalf = minOf(reticleLength + 8f * density, maxRadius)
+                val arm = (boxHalf * 0.4f).coerceAtLeast(8f * density)
+
+                // Верхний левый
                 canvas.drawLine(cx - boxHalf, cy - boxHalf, cx - boxHalf + arm, cy - boxHalf, justCornersPaint)
                 canvas.drawLine(cx - boxHalf, cy - boxHalf, cx - boxHalf, cy - boxHalf + arm, justCornersPaint)
 
+                // Верхний правый
                 canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf - arm, cy - boxHalf, justCornersPaint)
-                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf - arm, cy - boxHalf, justCornersPaint)
+                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf, cy - boxHalf + arm, justCornersPaint)
 
+                // Нижний левый
                 canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf + arm, cy + boxHalf, justCornersPaint)
                 canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf, cy + boxHalf - arm, justCornersPaint)
 
+                // Нижний правый
                 canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf - arm, cy + boxHalf, justCornersPaint)
-                canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf - arm, cy + boxHalf, justCornersPaint)
+                canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf, cy + boxHalf - arm, justCornersPaint)
 
                 // Плашка "ПЕРЕМЕЩАЙ"
                 val text = "ПЕРЕМЕЩАЙ"
                 val tW = justTextPaint.measureText(text)
                 val tH = justTextPaint.textSize
                 val tagY = (cy - boxHalf - 8f * density).coerceAtLeast(opticalRect.top + tH + 6f * density)
-                val tagX = cx - tW / 2f
+                val tagX = (cx - tW / 2f).coerceIn(opticalRect.left + 8f * density, opticalRect.right - tW - 8f * density)
 
                 canvas.drawRect(tagX - 6f * density, tagY - tH - 4f * density, tagX + tW + 6f * density, tagY + 3f * density, justBgPaint)
                 canvas.drawText(text, tagX, tagY, justTextPaint)
