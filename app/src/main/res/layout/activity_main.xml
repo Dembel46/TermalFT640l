@@ -7,7 +7,7 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Изолированный контейнер камер -->
+    <!-- Горизонтальный контейнер камер -->
     <LinearLayout
         android:id="@+id/cameraContainer"
         android:layout_width="match_parent"
@@ -27,7 +27,7 @@
             android:layout_weight="0.7"
             android:background="#000000">
 
-            <com.serenegiant.widget.AspectRatioSurfaceView
+            <SurfaceView
                 android:id="@+id/svUvcCamera"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
