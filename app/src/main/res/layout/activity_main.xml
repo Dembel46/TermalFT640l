@@ -7,7 +7,7 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Контейнер с жестким аппаратным делением 70/30 через weightSum -->
+    <!-- Контейнер с аппаратным делением строго 70/30 -->
     <LinearLayout
         android:id="@+id/cameraContainer"
         android:layout_width="0dp"
@@ -20,7 +20,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
-        <!-- 1. Слот тепловизора (строго 70%) -->
+        <!-- 1. Слот тепловизора (строго 70%, TextureView исключает наезд на соседнее окно) -->
         <FrameLayout
             android:id="@+id/thermalContainer"
             android:layout_width="0dp"
@@ -28,7 +28,7 @@
             android:layout_weight="0.7"
             android:background="#000000">
 
-            <SurfaceView
+            <TextureView
                 android:id="@+id/svUvcCamera"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -46,11 +46,12 @@
             <androidx.camera.view.PreviewView
                 android:id="@+id/pvPhoneCamera"
                 android:layout_width="match_parent"
-                android:layout_height="match_parent" />
+                android:layout_height="match_parent"
+                app:implementationMode="compatible" />
         </FrameLayout>
     </LinearLayout>
 
-    <!-- Кнопка "Во весь экран" -->
+    <!-- Кнопка "Во весь экран" на окне тепловизора -->
     <Button
         android:id="@+id/btnThermalFullscreen"
         android:layout_width="40dp"
