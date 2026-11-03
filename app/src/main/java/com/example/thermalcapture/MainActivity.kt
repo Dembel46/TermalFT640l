@@ -14,6 +14,7 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.PixelCopy
 import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -32,7 +33,6 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.herohan.uvcapp.CameraHelper
 import com.herohan.uvcapp.ICameraHelper
-import com.serenegiant.widget.AspectRatioSurfaceView
 
 class MainActivity : AppCompatActivity() {
 
@@ -40,7 +40,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraContainer: LinearLayout
     private lateinit var thermalContainer: FrameLayout
     private lateinit var opticalContainer: FrameLayout
-    private lateinit var cameraView: AspectRatioSurfaceView
+    private lateinit var cameraView: SurfaceView
     private lateinit var phoneCameraView: PreviewView
     private lateinit var crosshairOverlay: CrosshairView
     private lateinit var tvStatus: TextView
@@ -103,9 +103,6 @@ class MainActivity : AppCompatActivity() {
 
         alertManager = AlertManager(this)
 
-        // Отключаем неконтролируемый расчет AspectRatioSurfaceView, управляем геометрией строго из кода
-        cameraView.setAspectRatio(0, 0)
-
         initVisionPipeline()
         initViews()
         initButtons()
@@ -135,7 +132,7 @@ class MainActivity : AppCompatActivity() {
                             PixelCopy.request(cameraView, srcRect, thermalAnalyzeBmp, { result ->
                                 if (result == PixelCopy.SUCCESS) {
                                     val copy = thermalAnalyzeBmp.copy(Bitmap.Config.ARGB_8888, false)
-                                    dispatchFrameToVision(copy, isThermal = true)
+                                    dispatchFrameToVision(copy)
                                 } else {
                                     isProcessingFrame = false
                                 }
@@ -144,11 +141,12 @@ class MainActivity : AppCompatActivity() {
                             isProcessingFrame = false
                         }
                     } else {
-                        // Если тепловизор не подключен — анализируем штатную камеру
-                        val opticalBmp = phoneCameraView.bitmap
-                        if (opticalBmp != null) {
-                            dispatchFrameToVision(opticalBmp, isThermal = false)
+                        // Тепловизор отключен -> НЕ сканируем оптику, убираем рамки
+                        if (crosshairOverlay.detectedTargets.isNotEmpty()) {
+                            crosshairOverlay.detectedTargets = emptyList()
+                            crosshairOverlay.invalidate()
                         }
+                        tvStatus.text = "Ожидание подключения тепловизора..."
                     }
                 }
 
@@ -157,11 +155,11 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    private fun dispatchFrameToVision(bmp: Bitmap, isThermal: Boolean) {
+    private fun dispatchFrameToVision(bmp: Bitmap) {
         isProcessingFrame = true
         visionHandler.post {
             try {
-                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp, isThermal) else emptyList()
+                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp) else emptyList()
                 bmp.recycle()
 
                 val hasMotion = targets.any { it.type == TargetType.MOVING }
@@ -177,8 +175,7 @@ class MainActivity : AppCompatActivity() {
                         tvStatus.text = "Трекинг: ВЫКЛЮЧЕН"
                     } else if (targets.isNotEmpty()) {
                         val movingCount = targets.count { it.type == TargetType.MOVING }
-                        val srcLabel = if (isThermal) "Тепло" else "Оптика"
-                        tvStatus.text = "Целей: " + targets.size + " (Движение: " + movingCount + ") [" + srcLabel + "]"
+                        tvStatus.text = "Целей: " + targets.size + " (Движение: " + movingCount + ")"
                     } else {
                         tvStatus.text = "Поиск целей: АКТИВЕН"
                     }
@@ -231,7 +228,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Точный математический расчет границ 4:3 внутри контейнера (исключает наезд на оптику)
+     * Математическое вписывание 4:3 строго в границы контейнера (0% перекрытия с соседним окном)
      */
     private fun adjustThermalViewBounds() {
         val containerW = thermalContainer.width
@@ -245,11 +242,9 @@ class MainActivity : AppCompatActivity() {
         val fitH: Int
 
         if (containerRatio > targetRatio) {
-            // Контейнер шире, чем 4:3 -> вписываем по высоте, центрируем по горизонтали
             fitH = containerH
             fitW = (containerH * targetRatio).toInt().coerceAtMost(containerW)
         } else {
-            // Контейнер уже, чем 4:3 -> вписываем по ширине, центрируем по вертикали
             fitW = containerW
             fitH = (containerW / targetRatio).toInt().coerceAtMost(containerH)
         }
@@ -346,6 +341,7 @@ class MainActivity : AppCompatActivity() {
             showResolutionDialog()
         }
 
+        // Кнопка ЮСТИРОВКА
         btnCalibrate.setOnClickListener {
             crosshairOverlay.isCalibrationMode = !crosshairOverlay.isCalibrationMode
             if (crosshairOverlay.isCalibrationMode) {
@@ -415,18 +411,15 @@ class MainActivity : AppCompatActivity() {
             "5 : 4 (640 x 512 FT640L)",
             "16 : 9 (Широкоформатный)"
         )
-        val sizes = arrayOf(
-            Pair(4, 3),
-            Pair(5, 4),
-            Pair(16, 9)
-        )
 
         AlertDialog.Builder(this)
             .setTitle("Пропорции тепловизора:")
             .setItems(resolutions) { _, which ->
-                val chosen = sizes[which]
-                btnResolution.text = "" + chosen.first + ":" + chosen.second
-                cameraView.setAspectRatio(chosen.first, chosen.second)
+                btnResolution.text = when(which) {
+                    0 -> "4:3"
+                    1 -> "5:4"
+                    else -> "16:9"
+                }
                 rootLayout.post { updateOverlayBounds() }
             }
             .show()
