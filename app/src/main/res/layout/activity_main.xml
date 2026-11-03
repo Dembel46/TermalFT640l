@@ -7,13 +7,14 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Горизонтальный контейнер камер -->
+    <!-- Горизонтальный контейнер с аппаратным делением 70/30 -->
     <LinearLayout
         android:id="@+id/cameraContainer"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
         android:baselineAligned="false"
         android:orientation="horizontal"
+        android:weightSum="1.0"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -29,9 +30,8 @@
 
             <SurfaceView
                 android:id="@+id/svUvcCamera"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center" />
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
         </FrameLayout>
 
         <!-- 2. Слот оптики (строго 30%) -->
@@ -84,7 +84,7 @@
         android:layout_marginTop="10dp"
         android:background="#99000000"
         android:padding="6dp"
-        android:text="Поиск движущихся целей..."
+        android:text="Ожидание подключения тепловизора..."
         android:textColor="#00FF00"
         android:textSize="11sp"
         app:layout_constraintStart_toStartOf="parent"
