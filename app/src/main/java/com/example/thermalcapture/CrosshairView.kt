@@ -16,9 +16,9 @@ import android.os.Looper
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.PixelCopy
+import android.view.SurfaceView
 import android.view.View
 import androidx.camera.view.PreviewView
-import android.view.SurfaceView
 import kotlin.math.roundToInt
 
 class CrosshairView @JvmOverloads constructor(
@@ -255,52 +255,47 @@ class CrosshairView @JvmOverloads constructor(
         val isThermalVisible = thermalRect.width() > 0 && thermalRect.height() > 0
         val isOpticalVisible = phoneCameraView?.visibility == View.VISIBLE && opticalRect.width() > 0 && opticalRect.height() > 0
 
-        // 1. Отрисовка рамок трекера строго на активном окне тепловизора
+        // 1. Отрисовка рамок трекера СТРОГО на тепловизоре
         if (isThermalVisible && detectedTargets.isNotEmpty()) {
             val minSensorW = 9f / 640f
             val minSensorH = 9f / 512f
 
             for (target in detectedTargets) {
-                val targetWindow = if (target.isThermalSource) thermalRect else opticalRect
-                val isTargetWindowVisible = if (target.isThermalSource) isThermalVisible else isOpticalVisible
+                val isLarge = target.bounds.width() > minSensorW || target.bounds.height() > minSensorH
 
-                if (isTargetWindowVisible && targetWindow.width() > 0 && targetWindow.height() > 0) {
-                    val isLarge = target.bounds.width() > minSensorW || target.bounds.height() > minSensorH
+                val targetColor = when (target.type) {
+                    TargetType.MOVING -> colorMoving
+                    TargetType.HUMAN_VEHICLE -> colorHumanVehicle
+                    TargetType.OTHER -> colorOther
+                }
+                targetPaint.color = targetColor
 
-                    val targetColor = when (target.type) {
-                        TargetType.MOVING -> colorMoving
-                        TargetType.HUMAN_VEHICLE -> colorHumanVehicle
-                        TargetType.OTHER -> colorOther
-                    }
-                    targetPaint.color = targetColor
-
-                    if (isLarge && target.silhouettePoints.isNotEmpty()) {
-                        val path = Path()
-                        var first = true
-                        for (pt in target.silhouettePoints) {
-                            val px = targetWindow.left + pt.x * targetWindow.width()
-                            val py = targetWindow.top + pt.y * targetWindow.height()
-                            if (first) {
-                                path.moveTo(px, py)
-                                first = false
-                            } else {
-                                path.lineTo(px, py)
-                            }
+                if (isLarge && target.silhouettePoints.isNotEmpty()) {
+                    val path = Path()
+                    var first = true
+                    for (pt in target.silhouettePoints) {
+                        val px = thermalRect.left + pt.x * thermalRect.width()
+                        val py = thermalRect.top + pt.y * thermalRect.height()
+                        if (first) {
+                            path.moveTo(px, py)
+                            first = false
+                        } else {
+                            path.lineTo(px, py)
                         }
-                        path.close()
-                        targetPaint.strokeWidth = 2.4f * density
-                        canvas.drawPath(path, targetPaint)
-                    } else {
-                        val cx = targetWindow.left + target.bounds.centerX() * targetWindow.width()
-                        val cy = targetWindow.top + target.bounds.centerY() * targetWindow.height()
-
-                        val halfBox = 7.5f * density
-                        val boxRect = RectF(cx - halfBox, cy - halfBox, cx + halfBox, cy + halfBox)
-
-                        targetPaint.strokeWidth = 2f * density
-                        canvas.drawRect(boxRect, targetPaint)
-                        canvas.drawCircle(cx, cy, 1.5f * density, targetPaint)
                     }
+                    path.close()
+                    targetPaint.strokeWidth = 2.4f * density
+                    canvas.drawPath(path, targetPaint)
+                } else {
+                    val cx = thermalRect.left + target.bounds.centerX() * thermalRect.width()
+                    val cy = thermalRect.top + target.bounds.centerY() * thermalRect.height()
+
+                    val halfBox = 7.5f * density
+                    val boxRect = RectF(cx - halfBox, cy - halfBox, cx + halfBox, cy + halfBox)
+
+                    targetPaint.strokeWidth = 2f * density
+                    canvas.drawRect(boxRect, targetPaint)
+                    canvas.drawCircle(cx, cy, 1.5f * density, targetPaint)
                 }
             }
         }
@@ -336,7 +331,7 @@ class CrosshairView @JvmOverloads constructor(
                 canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf, cy + boxHalf - arm, justCornersPaint)
 
                 canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf - arm, cy + boxHalf, justCornersPaint)
-                canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf, cy + boxHalf - arm, justCornersPaint)
+                canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf - arm, cy + boxHalf, justCornersPaint)
 
                 // Плашка "ПЕРЕМЕЩАЙ"
                 val text = "ПЕРЕМЕЩАЙ"
