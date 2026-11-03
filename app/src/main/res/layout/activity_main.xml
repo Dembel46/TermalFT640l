@@ -7,7 +7,7 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Изолированный контейнер камер (исключает перекрытие окон) -->
+    <!-- Изолированный контейнер камер -->
     <LinearLayout
         android:id="@+id/cameraContainer"
         android:layout_width="match_parent"
@@ -19,7 +19,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
-        <!-- 1. Изолированный слот тепловизора (70% по умолчанию) -->
+        <!-- 1. Слот тепловизора (строго 70%) -->
         <FrameLayout
             android:id="@+id/thermalContainer"
             android:layout_width="0dp"
@@ -34,7 +34,7 @@
                 android:layout_gravity="center" />
         </FrameLayout>
 
-        <!-- 2. Изолированный слот оптики (30% по умолчанию) -->
+        <!-- 2. Слот оптики (строго 30%) -->
         <FrameLayout
             android:id="@+id/opticalContainer"
             android:layout_width="0dp"
