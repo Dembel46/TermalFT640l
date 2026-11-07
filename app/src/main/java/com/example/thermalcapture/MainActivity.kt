@@ -5,8 +5,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbDevice
 import android.os.Bundle
 import android.os.Handler
@@ -14,9 +14,8 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.PixelCopy
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -40,10 +39,10 @@ import kotlin.math.atan2
 class MainActivity : AppCompatActivity() {
 
     private lateinit var rootLayout: ConstraintLayout
-    private lateinit var cameraContainer: LinearLayout
+    private lateinit var cameraContainer: FrameLayout
     private lateinit var thermalContainer: FrameLayout
     private lateinit var opticalContainer: FrameLayout
-    private lateinit var cameraView: SurfaceView
+    private lateinit var cameraView: TextureView
     private lateinit var phoneCameraView: PreviewView
     private lateinit var crosshairOverlay: CrosshairView
     private lateinit var tvStatus: TextView
@@ -54,15 +53,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnResolution: Button
     private lateinit var btnTracking: Button
     private lateinit var btnThermalFullscreen: Button
+    private lateinit var btnHybrid: Button
     private lateinit var btnAgc: Button
     private lateinit var btnZoom: Button
     private lateinit var btnContrastType: Button
 
     private var cameraHelper: ICameraHelper? = null
+    private var thermalSurface: Surface? = null
 
-    // Контроллер протокола FT640L
     private val serialController = FT640SerialController()
-
     private val visionEngine = ThermalVisionEngine()
     private lateinit var alertManager: AlertManager
 
@@ -77,13 +76,13 @@ class MainActivity : AppCompatActivity() {
 
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
 
-    // Режимы экрана: 0 - 70/30 (по умолчанию), 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
+    // Режимы: 0 - 70/30, 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
     private var displayMode = 0
     private var isThermalFullscreen = false
+    private var isHybridModeActive = false
 
     // Настройки тепловизора FT640L
     private var isAutoAgc = true
-    private var currentPaletteIdx = 0
     private var currentZoomIndex = 0
     private var currentContinuousZoom = 1.0f
 
@@ -107,6 +106,7 @@ class MainActivity : AppCompatActivity() {
         btnResolution = findViewById(R.id.btnResolution)
         btnTracking = findViewById(R.id.btnTracking)
         btnThermalFullscreen = findViewById(R.id.btnThermalFullscreen)
+        btnHybrid = findViewById(R.id.btnHybrid)
         btnAgc = findViewById(R.id.btnAgc)
         btnZoom = findViewById(R.id.btnZoom)
         btnContrastType = findViewById(R.id.btnContrastType)
@@ -118,6 +118,12 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
 
+        crosshairOverlay.onHybridAlphaChanged = { alpha ->
+            if (isHybridModeActive) {
+                cameraView.alpha = alpha
+            }
+        }
+
         alertManager = AlertManager(this)
 
         initVisionPipeline()
@@ -126,7 +132,6 @@ class MainActivity : AppCompatActivity() {
         setupZoomGestures()
         checkPermissionsAndInit()
 
-        // Старт строго в режиме 70/30
         rootLayout.post {
             setSplitRatio(0.7f, 0.3f, "70/30")
         }
@@ -141,20 +146,17 @@ class MainActivity : AppCompatActivity() {
                 if (!isVisionRunning) return
 
                 if (!isProcessingFrame && isTrackingEnabled) {
-                    val isThermalActive = isThermalStreaming && cameraView.width > 0 && cameraView.holder.surface?.isValid == true
+                    val isThermalActive = isThermalStreaming && cameraView.width > 0 && cameraView.isAvailable
 
                     if (isThermalActive) {
-                        val frame = cameraView.holder.surfaceFrame
-                        val srcRect = Rect(0, 0, frame.width(), frame.height())
                         try {
-                            PixelCopy.request(cameraView, srcRect, thermalAnalyzeBmp, { result ->
-                                if (result == PixelCopy.SUCCESS) {
-                                    val copy = thermalAnalyzeBmp.copy(Bitmap.Config.ARGB_8888, false)
-                                    dispatchFrameToVision(copy)
-                                } else {
-                                    isProcessingFrame = false
-                                }
-                            }, mainHandler)
+                            val bmp = cameraView.getBitmap(thermalAnalyzeBmp)
+                            if (bmp != null) {
+                                val copy = bmp.copy(Bitmap.Config.ARGB_8888, false)
+                                dispatchFrameToVision(copy)
+                            } else {
+                                isProcessingFrame = false
+                            }
                         } catch (_: Exception) {
                             isProcessingFrame = false
                         }
@@ -227,17 +229,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initViews() {
-        cameraView.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) {
-                cameraHelper?.addSurface(holder.surface, false)
-            }
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        cameraView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+                val surface = Surface(surfaceTexture)
+                thermalSurface = surface
+                cameraHelper?.addSurface(surface, false)
                 updateOverlayBounds()
             }
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                cameraHelper?.removeSurface(holder.surface)
+
+            override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+                updateOverlayBounds()
             }
-        })
+
+            override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+                thermalSurface?.let { cameraHelper?.removeSurface(it) }
+                thermalSurface?.release()
+                thermalSurface = null
+                return true
+            }
+
+            override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {}
+        }
 
         phoneCameraView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             updateOverlayBounds()
@@ -250,17 +262,21 @@ class MainActivity : AppCompatActivity() {
         if (containerW <= 0 || containerH <= 0) return
 
         val targetRatio = 4f / 3f
-        val containerRatio = containerW.toFloat() / containerH.toFloat()
-
         val fitW: Int
         val fitH: Int
 
-        if (containerRatio > targetRatio) {
-            fitH = containerH
-            fitW = (containerH * targetRatio).toInt().coerceAtMost(containerW)
+        if (isHybridModeActive) {
+            fitH = (containerH * 0.9f).toInt()
+            fitW = (fitH * targetRatio).toInt().coerceAtMost(containerW)
         } else {
-            fitW = containerW
-            fitH = (containerW / targetRatio).toInt().coerceAtMost(containerH)
+            val containerRatio = containerW.toFloat() / containerH.toFloat()
+            if (containerRatio > targetRatio) {
+                fitH = containerH
+                fitW = (containerH * targetRatio).toInt().coerceAtMost(containerW)
+            } else {
+                fitW = containerW
+                fitH = ((fitW * 3f) / 4f).toInt().coerceAtMost(containerH)
+            }
         }
 
         val lp = cameraView.layoutParams as FrameLayout.LayoutParams
@@ -313,7 +329,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
-        // 1. ТРИГГЕР АВТО/РУЧНОЙ КОНТРАСТ (справа сверху)
+        btnHybrid.setOnClickListener {
+            isHybridModeActive = !isHybridModeActive
+            crosshairOverlay.isHybridMode = isHybridModeActive
+
+            if (isHybridModeActive) {
+                btnHybrid.text = "ГИБРИД: ВКЛ"
+                btnHybrid.setBackgroundColor(0xFF0099CC.toInt())
+                applyHybridMode()
+                Toast.makeText(this, "Проведите пальцем вверх/вниз слева для настройки прозрачности", Toast.LENGTH_SHORT).show()
+            } else {
+                btnHybrid.text = "ГИБРИД"
+                btnHybrid.setBackgroundColor(0xFF444444.toInt())
+                cameraView.alpha = 1.0f
+                setSplitRatio(0.7f, 0.3f, "70/30")
+            }
+        }
+
         btnAgc.setOnClickListener {
             isAutoAgc = !isAutoAgc
             if (isAutoAgc) {
@@ -329,7 +361,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 2. ВЫБОР ТИПА КОНТРАСТА (ПАЛИТРЫ)
         btnContrastType.setOnClickListener {
             showPaletteDialog()
         }
@@ -349,6 +380,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnThermalFullscreen.setOnClickListener {
+            if (isHybridModeActive) {
+                isHybridModeActive = false
+                crosshairOverlay.isHybridMode = false
+                btnHybrid.text = "ГИБРИД"
+                btnHybrid.setBackgroundColor(0xFF444444.toInt())
+                cameraView.alpha = 1.0f
+            }
+
             if (!isThermalFullscreen) {
                 isThermalFullscreen = true
                 btnThermalFullscreen.text = "⤡"
@@ -361,6 +400,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnMode.setOnClickListener {
+            if (isHybridModeActive) {
+                isHybridModeActive = false
+                crosshairOverlay.isHybridMode = false
+                btnHybrid.text = "ГИБРИД"
+                btnHybrid.setBackgroundColor(0xFF444444.toInt())
+                cameraView.alpha = 1.0f
+            }
+
             displayMode = (displayMode + 1) % 3
             isThermalFullscreen = (displayMode == 1)
             btnThermalFullscreen.text = if (isThermalFullscreen) "⤡" else "⛶"
@@ -420,9 +467,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Меню выбора палитры (Тип контраста)
-     */
     private fun showPaletteDialog() {
         val palettes = arrayOf(
             "Горячий белый (White Hot)",
@@ -437,7 +481,6 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Тип контраста (Палитра):")
             .setItems(palettes) { _, which ->
-                currentPaletteIdx = which
                 btnContrastType.text = "КОНТРАСТ: " + paletteShortNames[which]
                 serialController.setPalette(paletteCodes[which])
                 Toast.makeText(this, "Палитра: " + palettes[which], Toast.LENGTH_SHORT).show()
@@ -445,9 +488,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Управление зумом: короткий клик (0x->1x->2x->3x) и зажатие кругового нониуса
-     */
     @SuppressLint("ClickableViewAccessibility")
     private fun setupZoomGestures() {
         val longPressHandler = Handler(Looper.getMainLooper())
@@ -467,13 +507,12 @@ class MainActivity : AppCompatActivity() {
                 MotionEvent.ACTION_DOWN -> {
                     downTime = System.currentTimeMillis()
                     isLongPressTriggered = false
-                    longPressHandler.postDelayed(longPressRunnable, 400) // Зажатие через 400 мс
+                    longPressHandler.postDelayed(longPressRunnable, 400)
                     lastTouchAngle = 0.0
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (isLongPressTriggered) {
-                        // Расчет угла жеста относительно центра экрана
                         val cx = rootLayout.width / 2.0
                         val cy = rootLayout.height / 2.0
                         val currentAngle = Math.toDegrees(atan2(event.rawY - cy, event.rawX - cx))
@@ -483,7 +522,6 @@ class MainActivity : AppCompatActivity() {
                             if (delta > 180) delta -= 360
                             if (delta < -180) delta += 360
 
-                            // По часовой стрелке -> zoom++, против -> zoom--
                             val zoomStep = (delta / 40.0).toFloat()
                             currentContinuousZoom = (currentContinuousZoom + zoomStep).coerceIn(1.0f, 4.0f)
                             crosshairOverlay.currentZoomValue = currentContinuousZoom
@@ -498,17 +536,15 @@ class MainActivity : AppCompatActivity() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     longPressHandler.removeCallbacks(longPressRunnable)
                     if (isLongPressTriggered) {
-                        // Отпускание после вращения нониуса
                         crosshairOverlay.isZoomDialVisible = false
                         crosshairOverlay.invalidate()
                         btnZoom.text = String.format("ЗУМ: %.1fx", currentContinuousZoom)
                         serialController.setElectronicZoom(currentContinuousZoom)
-             } else {
-                        // Короткий клик: переключение 0x -> 1x -> 2x -> 3x
+                    } else {
                         if (System.currentTimeMillis() - downTime < 400) {
                             currentZoomIndex = (currentZoomIndex + 1) % 4
                             currentContinuousZoom = when (currentZoomIndex) {
-                                0 -> 1.0f // Базовый 0x/1x
+                                0 -> 1.0f
                                 1 -> 2.0f
                                 2 -> 3.0f
                                 else -> 4.0f
@@ -530,23 +566,71 @@ class MainActivity : AppCompatActivity() {
         cameraView.scaleY = zoom
     }
 
+    private fun applyHybridMode() {
+        val lpO = opticalContainer.layoutParams as FrameLayout.LayoutParams
+        lpO.width = FrameLayout.LayoutParams.MATCH_PARENT
+        lpO.height = FrameLayout.LayoutParams.MATCH_PARENT
+        lpO.gravity = Gravity.NO_GRAVITY
+        opticalContainer.visibility = View.VISIBLE
+        opticalContainer.layoutParams = lpO
+
+        val lpT = thermalContainer.layoutParams as FrameLayout.LayoutParams
+        lpT.width = FrameLayout.LayoutParams.MATCH_PARENT
+        lpT.height = FrameLayout.LayoutParams.MATCH_PARENT
+        lpT.gravity = Gravity.CENTER
+        thermalContainer.visibility = View.VISIBLE
+        thermalContainer.layoutParams = lpT
+
+        cameraView.alpha = crosshairOverlay.hybridAlpha
+
+        cameraContainer.requestLayout()
+        rootLayout.post { updateOverlayBounds() }
+    }
+
     private fun setSplitRatio(weightThermal: Float, weightOptical: Float, modeLabel: String) {
-        val lpT = thermalContainer.layoutParams as LinearLayout.LayoutParams
-        val lpO = opticalContainer.layoutParams as LinearLayout.LayoutParams
+        cameraView.alpha = 1.0f
 
-        lpT.width = 0
-        lpO.width = 0
-        lpT.weight = weightThermal
-        lpO.weight = weightOptical
+        val screenW = cameraContainer.width
+        val screenH = cameraContainer.height
+        if (screenW <= 0 || screenH <= 0) {
+            rootLayout.post { setSplitRatio(weightThermal, weightOptical, modeLabel) }
+            return
+        }
 
-        thermalContainer.visibility = if (weightThermal > 0f) View.VISIBLE else View.GONE
-        opticalContainer.visibility = if (weightOptical > 0f) View.VISIBLE else View.GONE
+        val lpT = thermalContainer.layoutParams as FrameLayout.LayoutParams
+        val lpO = opticalContainer.layoutParams as FrameLayout.LayoutParams
+
+        if (weightThermal > 0f && weightOptical > 0f) {
+            val thermalW = (screenW * weightThermal).toInt()
+            val opticalW = screenW - thermalW
+
+            lpT.width = thermalW
+            lpT.height = FrameLayout.LayoutParams.MATCH_PARENT
+            lpT.gravity = Gravity.START
+            thermalContainer.visibility = View.VISIBLE
+
+            lpO.width = opticalW
+            lpO.height = FrameLayout.LayoutParams.MATCH_PARENT
+            lpO.gravity = Gravity.END
+            opticalContainer.visibility = View.VISIBLE
+        } else if (weightThermal > 0f) {
+            lpT.width = FrameLayout.LayoutParams.MATCH_PARENT
+            lpT.height = FrameLayout.LayoutParams.MATCH_PARENT
+            lpT.gravity = Gravity.CENTER
+            thermalContainer.visibility = View.VISIBLE
+            opticalContainer.visibility = View.GONE
+        } else {
+            lpO.width = FrameLayout.LayoutParams.MATCH_PARENT
+            lpO.height = FrameLayout.LayoutParams.MATCH_PARENT
+            lpO.gravity = Gravity.CENTER
+            opticalContainer.visibility = View.VISIBLE
+            thermalContainer.visibility = View.GONE
+        }
 
         thermalContainer.layoutParams = lpT
         opticalContainer.layoutParams = lpO
 
         btnMode.text = modeLabel
-
         cameraContainer.requestLayout()
         rootLayout.post { updateOverlayBounds() }
     }
@@ -606,7 +690,7 @@ class MainActivity : AppCompatActivity() {
                     isThermalStreaming = true
                     runOnUiThread { tvStatus.text = "FT640L: Поток активен" }
                     startPreview()
-                    cameraView.holder.surface?.let { surface ->
+                    thermalSurface?.let { surface ->
                         if (surface.isValid) {
                             addSurface(surface, false)
                         }
@@ -641,6 +725,7 @@ class MainActivity : AppCompatActivity() {
         isVisionRunning = false
         visionThread.quitSafely()
         alertManager.release()
+        thermalSurface?.release()
         cameraHelper?.release()
     }
 }
