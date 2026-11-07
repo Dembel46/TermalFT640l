@@ -245,7 +245,7 @@ class CrosshairView @JvmOverloads constructor(
             opticalShader.setLocalMatrix(opticalMatrix)
 
             isOpticalReady = true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             fullBitmap.recycle()
         }
     }
@@ -287,7 +287,7 @@ class CrosshairView @JvmOverloads constructor(
             thermalShader.setLocalMatrix(thermalMatrix)
 
             isThermalReady = true
-        } catch (_: Exception) {}
+        } catch (e: Exception) {}
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -370,13 +370,13 @@ class CrosshairView @JvmOverloads constructor(
                 canvas.drawLine(cx - boxHalf, cy - boxHalf, cx - boxHalf, cy - boxHalf + arm, justCornersPaint)
 
                 canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf - arm, cy - boxHalf, justCornersPaint)
-                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf, cy - boxHalf + arm, justCornersPaint)
+                canvas.drawLine(cx + boxHalf, cy - boxHalf, cx + boxHalf - arm, cy - boxHalf, justCornersPaint)
 
                 canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf + arm, cy + boxHalf, justCornersPaint)
                 canvas.drawLine(cx - boxHalf, cy + boxHalf, cx - boxHalf, cy + boxHalf - arm, justCornersPaint)
 
                 canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf - arm, cy + boxHalf, justCornersPaint)
-                canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf, cy + boxHalf - arm, justCornersPaint)
+                canvas.drawLine(cx + boxHalf, cy + boxHalf, cx + boxHalf - arm, cy + boxHalf, justCornersPaint)
 
                 val text = "ПЕРЕМЕЩАЙ"
                 val tW = justTextPaint.measureText(text)
