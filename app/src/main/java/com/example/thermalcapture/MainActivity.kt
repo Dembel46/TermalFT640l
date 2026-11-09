@@ -1,7 +1,6 @@
 package com.example.thermalcapture
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -15,6 +14,7 @@ import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -112,16 +112,35 @@ class MainActivity : AppCompatActivity() {
     private var thermalAspectW = 4
     private var thermalAspectH = 3
 
-    // АВТОСКРЫТИЕ САЙДБАРА ЧЕРЕЗ 7 СЕКУНД
+    // Автоскрытие сайдбара через 7 секунд
     private val sidebarHandler = Handler(Looper.getMainLooper())
     private val hideSidebarRunnable = Runnable { collapseSidebar() }
 
-    // НАСТОЯЩИЙ ВНУТРЕННИЙ ВИДЕОРЕГИСТРАТОР (БЕЗ СИСТЕМНЫХ ЗАПРОСОВ)
+    // НАСТОЯЩИЙ ВНУТРЕННИЙ РЕКОРДЕР (БЕЗ ДИАЛОГОВ ТРАНСЛЯЦИИ И ЗАПИСИ ЭКРАНА)
     private val videoRecorder = InternalVideoRecorder(width = 1280, height = 720, frameRate = 25)
     private var isRecording = false
     private var isLoopRecordMode = true
     private var recordDurationSec = 0
     private var currentRecordFile: File? = null
+
+    // Циклический поставщик кадров для энкодера (забирается в UI потоке без вылетов)
+    private val recordFrameLoopRunnable = object : Runnable {
+        override fun run() {
+            if (isRecording) {
+                val tBmp = if (isThermalStreaming && cameraView.isAvailable) cameraView.bitmap else null
+                val oBmp = if (phoneCameraView.visibility == View.VISIBLE) phoneCameraView.bitmap else null
+
+                videoRecorder.queueFrame(
+                    thermalBmp = tBmp,
+                    opticalBmp = oBmp,
+                    displayMode = displayMode,
+                    isHybrid = isHybridModeActive,
+                    hybridAlpha = crosshairOverlay.hybridAlpha
+                )
+                mainHandler.postDelayed(this, 40) // 25 кадров в секунду
+            }
+        }
+    }
 
     private val recordTimerHandler = Handler(Looper.getMainLooper())
     private val recordTimerRunnable = object : Runnable {
@@ -198,6 +217,7 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
+        // Загрузка сохраненных координат юстировки
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
@@ -237,6 +257,10 @@ class MainActivity : AppCompatActivity() {
             if (iface.interfaceClass == UsbConstants.USB_CLASS_VIDEO) return true
         }
         return false
+    }
+
+    private fun isSerialDevice(device: UsbDevice): Boolean {
+        return UsbSerialProber.getDefaultProber().probeDevice(device) != null
     }
 
     private fun initVisionPipeline() {
@@ -739,16 +763,22 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         val location = prefs.getString("storage_location", "standard")
 
-        return if (location == "root") {
-            val rootDir = File(Environment.getExternalStorageDirectory(), "ThermalCapture/$subfolder")
-            if (!rootDir.exists()) rootDir.mkdirs()
-            rootDir
+        val targetDir = if (location == "root") {
+            File(Environment.getExternalStorageDirectory(), "ThermalCapture/$subfolder")
         } else {
             val baseType = if (subfolder == "Photos") Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES
-            val pubDir = File(Environment.getExternalStoragePublicDirectory(baseType), "ThermalCapture")
-            if (!pubDir.exists()) pubDir.mkdirs()
-            pubDir
+            File(Environment.getExternalStoragePublicDirectory(baseType), "ThermalCapture")
         }
+
+        if (!targetDir.exists()) {
+            val created = targetDir.mkdirs()
+            if (!created) {
+                // Надежный системный фолбэк при ограничениях Scoped Storage
+                val fallbackType = if (subfolder == "Photos") Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES
+                return getExternalFilesDir(fallbackType) ?: filesDir
+            }
+        }
+        return targetDir
     }
 
     private fun takeScreenshotPhoto() {
@@ -780,6 +810,7 @@ class MainActivity : AppCompatActivity() {
             FileOutputStream(file).use { out ->
                 bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
             }
+            MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), arrayOf("image/jpeg"), null)
             Toast.makeText(this, "Фото сохранено: " + file.name, Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Ошибка сохранения фото", Toast.LENGTH_SHORT).show()
@@ -789,7 +820,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Внутренняя запись видеорегистратора (БЕЗ MediaProjection / системных диалогов)
+     * Внутренняя видеозапись без системных диалогов трансляции экрана
      */
     private fun toggleVideoRecording() {
         if (!isRecording) {
@@ -804,23 +835,13 @@ class MainActivity : AppCompatActivity() {
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         currentRecordFile = File(dir, "REC_$timeStamp.mp4")
 
-        val started = videoRecorder.start(currentRecordFile!!) {
-            // Поставщик кадров напрямую из видеопотоков (0% нагрузки на систему трансляции)
-            val tBmp = if (isThermalStreaming && cameraView.isAvailable) cameraView.bitmap else null
-            val oBmp = if (phoneCameraView.visibility == View.VISIBLE) phoneCameraView.bitmap else null
-            InternalVideoRecorder.RecordFrameData(
-                thermalBmp = tBmp,
-                opticalBmp = oBmp,
-                displayMode = displayMode,
-                isHybrid = isHybridModeActive,
-                hybridAlpha = crosshairOverlay.hybridAlpha
-            )
-        }
+        val started = videoRecorder.start(currentRecordFile!!)
 
         if (started) {
             isRecording = true
             recordDurationSec = 0
             updateRecordUiState()
+            mainHandler.post(recordFrameLoopRunnable)
             recordTimerHandler.post(recordTimerRunnable)
             enforceStorageLimit(dir)
         } else {
@@ -830,22 +851,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun restartRecordSegment() {
         videoRecorder.stop()
+        currentRecordFile?.let {
+            MediaScannerConnection.scanFile(this, arrayOf(it.absolutePath), arrayOf("video/mp4"), null)
+        }
 
         val dir = getTargetDirectory("Videos")
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         currentRecordFile = File(dir, "REC_$timeStamp.mp4")
 
-        val started = videoRecorder.start(currentRecordFile!!) {
-            val tBmp = if (isThermalStreaming && cameraView.isAvailable) cameraView.bitmap else null
-            val oBmp = if (phoneCameraView.visibility == View.VISIBLE) phoneCameraView.bitmap else null
-            InternalVideoRecorder.RecordFrameData(
-                thermalBmp = tBmp,
-                opticalBmp = oBmp,
-                displayMode = displayMode,
-                isHybrid = isHybridModeActive,
-                hybridAlpha = crosshairOverlay.hybridAlpha
-            )
-        }
+        val started = videoRecorder.start(currentRecordFile!!)
 
         if (started) {
             recordDurationSec = 0
@@ -857,10 +871,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopVideoRecording() {
         isRecording = false
+        mainHandler.removeCallbacks(recordFrameLoopRunnable)
         recordTimerHandler.removeCallbacks(recordTimerRunnable)
         videoRecorder.stop()
+
+        currentRecordFile?.let {
+            MediaScannerConnection.scanFile(this, arrayOf(it.absolutePath), arrayOf("video/mp4"), null)
+            Toast.makeText(this, "Запись сохранена: " + it.name, Toast.LENGTH_SHORT).show()
+        }
+
         updateRecordUiState()
-        Toast.makeText(this, "Запись сохранена: " + (currentRecordFile?.name ?: ""), Toast.LENGTH_SHORT).show()
     }
 
     private fun enforceStorageLimit(dir: File) {
@@ -1165,6 +1185,7 @@ class MainActivity : AppCompatActivity() {
         isVisionRunning = false
         visionThread.quitSafely()
         sidebarHandler.removeCallbacks(hideSidebarRunnable)
+        mainHandler.removeCallbacks(recordFrameLoopRunnable)
         recordTimerHandler.removeCallbacks(recordTimerRunnable)
         videoRecorder.stop()
         alertManager.release()
