@@ -38,8 +38,8 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-    
-    // USB UVC плата захвата
+
+    // USB UVC плата захвата видео
     implementation("com.herohan:UVCAndroid:1.0.13")
 
     // CameraX для штатной камеры смартфона
@@ -48,4 +48,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
+
+    // Аппаратный драйвер USB-UART (CH340, CP2102, FTDI, PL2303)
+    implementation("com.github.mik3y:usb-serial-for-android:3.8.0")
 }
