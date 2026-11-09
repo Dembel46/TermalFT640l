@@ -47,8 +47,8 @@ class RecordingController(
     private var captureThread: HandlerThread? = null
     private var captureHandler: Handler? = null
 
-    private val opticalBmp = Bitmap.createBitmap(640, 360, Bitmap.Config.ARGB_8888)
-    private val thermalBmp = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888)
+        private val opticalBmp = Bitmap.createBitmap(480, 270, Bitmap.Config.ARGB_8888)
+    private val thermalBmp = Bitmap.createBitmap(480, 360, Bitmap.Config.ARGB_8888)
     private val opticalCanvas = Canvas(opticalBmp)
     private val srcRect = Rect()
     private val dstRect = Rect(0, 0, opticalBmp.width, opticalBmp.height)
