@@ -9,19 +9,26 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.media.MediaRecorder
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.view.Gravity
-import android.view.MotionEvent
+import android.view.PixelCopy
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
@@ -31,6 +38,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
@@ -43,7 +51,11 @@ import androidx.core.content.ContextCompat
 import com.herohan.uvcapp.CameraHelper
 import com.herohan.uvcapp.ICameraHelper
 import com.hoho.android.usbserial.driver.UsbSerialProber
-import kotlin.math.atan2
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
@@ -57,18 +69,25 @@ class MainActivity : AppCompatActivity() {
     private lateinit var phoneCameraView: PreviewView
     private lateinit var crosshairOverlay: CrosshairView
     private lateinit var tvStatus: TextView
+    private lateinit var tvRecordIndicator: TextView
+
+    // Боковой бар слева
+    private lateinit var leftSidebar: LinearLayout
+    private lateinit var sidebarContent: LinearLayout
+    private lateinit var btnToggleSidebar: Button
     private lateinit var btnMode: Button
     private lateinit var btnCalibrate: Button
-    private lateinit var btnSound: Button
-    private lateinit var btnFlash: Button
-    private lateinit var btnResolution: Button
     private lateinit var btnTracking: Button
+    private lateinit var btnPhoto: Button
+    private lateinit var btnRecord: Button
+    private lateinit var btnRescanUsb: Button
+
+    // Верхняя и нижняя панели
+    private lateinit var btnSettings: Button
     private lateinit var btnThermalFullscreen: Button
     private lateinit var btnHybrid: Button
-    private lateinit var btnAgc: Button
     private lateinit var btnZoom: Button
     private lateinit var btnContrastType: Button
-    private lateinit var btnUartSelect: Button
 
     private var cameraHelper: ICameraHelper? = null
     private var thermalSurface: Surface? = null
@@ -83,19 +102,62 @@ class MainActivity : AppCompatActivity() {
     private var isVisionRunning = true
     private var isProcessingFrame = false
 
-    private var isTrackingEnabled = true
+    // По умолчанию трекинг ВЫКЛЮЧЕН
+    private var isTrackingEnabled = false
     private var isThermalStreaming = false
 
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
 
-    // Режимы: 0 - 70/30, 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
+    // Режимы экрана: 0 - 70/30, 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
     private var displayMode = 0
     private var isThermalFullscreen = false
     private var isHybridModeActive = false
+    private var isSidebarExpanded = true
 
-    private var isAutoAgc = true
     private var currentZoomIndex = 0
-    private var currentContinuousZoom = 1.0f
+
+    // ВИДЕОРЕГИСТРАТОР
+    private var isRecording = false
+    private var isLoopRecordMode = true // true - Цикл (по 3 мин), false - Непрерывно
+    private var recordDurationSec = 0
+    private var mediaRecorder: MediaRecorder? = null
+    private var mediaProjection: MediaProjection? = null
+    private var virtualDisplay: VirtualDisplay? = null
+    private var currentRecordFile: File? = null
+
+    private val recordTimerHandler = Handler(Looper.getMainLooper())
+    private val recordTimerRunnable = object : Runnable {
+        override fun run() {
+            if (isRecording) {
+                recordDurationSec++
+                val min = recordDurationSec / 60
+                val sec = recordDurationSec % 60
+                val modeLabel = if (isLoopRecordMode) "ЦИКЛ 3М" else "НЕПРЕРЫВ"
+                tvRecordIndicator.text = String.format(Locale.US, "● REC [%s] %02d:%02d", modeLabel, min, sec)
+
+                // В циклическом режиме нарезка по 3 минуты (180 сек)
+                if (isLoopRecordMode && recordDurationSec >= 180) {
+                    restartRecordSegment()
+                }
+
+                recordTimerHandler.postDelayed(this, 1000)
+            }
+        }
+    }
+
+    private val screenCaptureLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            mediaProjection = projectionManager.getMediaProjection(result.resultCode, result.data!!)
+            startMediaRecorderInternal()
+        } else {
+            Toast.makeText(this, "Запись экрана отклонена пользователем", Toast.LENGTH_SHORT).show()
+            isRecording = false
+            updateRecordUiState()
+        }
+    }
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -111,12 +173,9 @@ class MainActivity : AppCompatActivity() {
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
                         device?.let {
                             if (serialController.connect(this@MainActivity, it)) {
-                                updateUartUiState(true, serialController.connectedDeviceName)
                                 Toast.makeText(this@MainActivity, "UART подключен: " + serialController.connectedDeviceName, Toast.LENGTH_SHORT).show()
                             }
                         }
-                    } else {
-                        Toast.makeText(this@MainActivity, "Разрешение на доступ к UART отклонено", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -136,22 +195,28 @@ class MainActivity : AppCompatActivity() {
         phoneCameraView = findViewById(R.id.pvPhoneCamera)
         crosshairOverlay = findViewById(R.id.crosshairOverlay)
         tvStatus = findViewById(R.id.tvStatus)
+        tvRecordIndicator = findViewById(R.id.tvRecordIndicator)
+
+        leftSidebar = findViewById(R.id.leftSidebar)
+        sidebarContent = findViewById(R.id.sidebarContent)
+        btnToggleSidebar = findViewById(R.id.btnToggleSidebar)
         btnMode = findViewById(R.id.btnMode)
         btnCalibrate = findViewById(R.id.btnCalibrate)
-        btnSound = findViewById(R.id.btnSound)
-        btnFlash = findViewById(R.id.btnFlash)
-        btnResolution = findViewById(R.id.btnResolution)
         btnTracking = findViewById(R.id.btnTracking)
+        btnPhoto = findViewById(R.id.btnPhoto)
+        btnRecord = findViewById(R.id.btnRecord)
+        btnRescanUsb = findViewById(R.id.btnRescanUsb)
+
+        btnSettings = findViewById(R.id.btnSettings)
         btnThermalFullscreen = findViewById(R.id.btnThermalFullscreen)
         btnHybrid = findViewById(R.id.btnHybrid)
-        btnAgc = findViewById(R.id.btnAgc)
         btnZoom = findViewById(R.id.btnZoom)
         btnContrastType = findViewById(R.id.btnContrastType)
-        btnUartSelect = findViewById(R.id.btnUartSelect)
 
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
+        // Загрузка координат юстировки
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
@@ -167,7 +232,6 @@ class MainActivity : AppCompatActivity() {
         initVisionPipeline()
         initViews()
         initButtons()
-        setupZoomGestures()
         checkPermissionsAndInit()
 
         val filter = IntentFilter(actionUsbPermission)
@@ -176,6 +240,8 @@ class MainActivity : AppCompatActivity() {
         } else {
             registerReceiver(usbReceiver, filter)
         }
+
+        updateRecordUiState()
 
         rootLayout.post {
             setSplitRatio(0.7f, 0.3f, "70/30")
@@ -189,98 +255,6 @@ class MainActivity : AppCompatActivity() {
             if (iface.interfaceClass == UsbConstants.USB_CLASS_VIDEO) return true
         }
         return false
-    }
-
-    private fun isSerialDevice(device: UsbDevice): Boolean {
-        return UsbSerialProber.getDefaultProber().probeDevice(device) != null
-    }
-
-    private fun updateUartUiState(connected: Boolean, deviceName: String = "") {
-        runOnUiThread {
-            if (connected) {
-                btnUartSelect.text = "UART: " + deviceName
-                btnUartSelect.setBackgroundColor(0xFF008800.toInt())
-            } else {
-                btnUartSelect.text = "UART: ВЫБОР"
-                btnUartSelect.setBackgroundColor(0xFF444444.toInt())
-            }
-        }
-    }
-
-    private fun showUartSelectionDialog() {
-        try {
-            val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-            val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
-
-            if (drivers.isEmpty()) {
-                val allUsbDevices = usbManager.deviceList.values.toList()
-                val msg = if (allUsbDevices.isEmpty()) {
-                    "USB-устройства не обнаружены. Проверьте OTG-переходник и кабель."
-                } else {
-                    val names = allUsbDevices.joinToString("\n") {
-                        String.format("%s (VID:%04X PID:%04X)", it.deviceName, it.vendorId, it.productId)
-                    }
-                    "Преобразователь не распознан. Найденные USB-устройства:\n$names"
-                }
-                AlertDialog.Builder(this)
-                    .setTitle("Преобразователь UART")
-                    .setMessage(msg)
-                    .setPositiveButton("OK", null)
-                    .show()
-                return
-            }
-
-            val items = Array(drivers.size) { i ->
-                val d = drivers[i].device
-                val friendly = serialController.getFriendlyName(d)
-                val hasPerm = if (usbManager.hasPermission(d)) "[Доступ есть]" else "[Запросить доступ]"
-                String.format("%s %s (VID:%04X)", friendly, hasPerm, d.vendorId)
-            }
-
-            AlertDialog.Builder(this)
-                .setTitle("Выберите UART преобразователь:")
-                .setItems(items) { _, which ->
-                    try {
-                        val selectedDriver = drivers[which]
-                        val device = selectedDriver.device
-
-                        if (usbManager.hasPermission(device)) {
-                            if (serialController.connectWithDriver(this, selectedDriver)) {
-                                updateUartUiState(true, serialController.connectedDeviceName)
-                                Toast.makeText(this, "Подключено: " + serialController.connectedDeviceName + " (115200 8N1)", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(this, "Не удалось открыть порт", Toast.LENGTH_SHORT).show()
-                            }
-                        } else {
-                            requestUsbPermission(device)
-                        }
-                    } catch (t: Throwable) {
-                        Toast.makeText(this, "Ошибка подключения: " + t.localizedMessage, Toast.LENGTH_LONG).show()
-                    }
-                }
-                .setNegativeButton("Отмена", null)
-                .show()
-        } catch (t: Throwable) {
-            Toast.makeText(this, "Ошибка сканирования USB: " + t.localizedMessage, Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun requestUsbPermission(device: UsbDevice) {
-        try {
-            val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-            val intent = Intent(actionUsbPermission).apply {
-                setPackage(packageName)
-            }
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            } else {
-                PendingIntent.FLAG_UPDATE_CURRENT
-            }
-            val permissionIntent = PendingIntent.getBroadcast(this, 0, intent, flags)
-            usbManager.requestPermission(device, permissionIntent)
-        } catch (t: Throwable) {
-            Toast.makeText(this, "Ошибка запроса доступа: " + t.localizedMessage, Toast.LENGTH_LONG).show()
-        }
     }
 
     private fun initVisionPipeline() {
@@ -313,6 +287,12 @@ class MainActivity : AppCompatActivity() {
                         }
                         tvStatus.text = "Ожидание подключения тепловизора..."
                     }
+                } else if (!isTrackingEnabled) {
+                    if (crosshairOverlay.detectedTargets.isNotEmpty()) {
+                        crosshairOverlay.detectedTargets = emptyList()
+                        crosshairOverlay.invalidate()
+                    }
+                    tvStatus.text = "Трекинг: ВЫКЛЮЧЕН"
                 }
 
                 mainHandler.postDelayed(this, 90)
@@ -324,7 +304,6 @@ class MainActivity : AppCompatActivity() {
         isProcessingFrame = true
         visionHandler.post {
             try {
-                // Исправлено: передается только 1 аргумент bmp
                 val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp) else emptyList()
                 bmp.recycle()
 
@@ -354,9 +333,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermissionsAndInit() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 101)
+        val permissions = mutableListOf(Manifest.permission.CAMERA)
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+
+        val needed = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (needed.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, needed.toTypedArray(), 101)
         } else {
             startPhoneCamera()
             initCameraHelper()
@@ -476,8 +463,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
-        btnUartSelect.setOnClickListener {
-            showUartSelectionDialog()
+        // Выдвижение / скрытие левого сайдбара
+        btnToggleSidebar.setOnClickListener {
+            isSidebarExpanded = !isSidebarExpanded
+            sidebarContent.visibility = if (isSidebarExpanded) View.VISIBLE else View.GONE
+            btnToggleSidebar.text = if (isSidebarExpanded) "◀" else "▶"
+        }
+
+        // Меню настроек (Шестеренка ⚙)
+        btnSettings.setOnClickListener {
+            showSettingsDialog()
+        }
+
+        // Кнопка ФОТО (Снимок экрана в текущем режиме отображения)
+        btnPhoto.setOnClickListener {
+            takeScreenshotPhoto()
+        }
+
+        // Кнопка ЗАПИСЬ ВИДЕО (Клик - старт/стоп, Долгий клик - выбор режима)
+        btnRecord.setOnClickListener {
+            toggleVideoRecording()
+        }
+        btnRecord.setOnLongClickListener {
+            showRecordModeDialog()
+            true
+        }
+
+        // Кнопка повторного опроса USB
+        btnRescanUsb.setOnClickListener {
+            rescanUsbDevices()
         }
 
         btnHybrid.setOnClickListener {
@@ -495,25 +509,6 @@ class MainActivity : AppCompatActivity() {
                 cameraView.alpha = 1.0f
                 setSplitRatio(0.7f, 0.3f, "70/30")
             }
-        }
-
-        btnAgc.setOnClickListener {
-            isAutoAgc = !isAutoAgc
-            serialController.setAutoContrast(isAutoAgc)
-
-            if (isAutoAgc) {
-                btnAgc.text = "АВТО КОНТРАСТ"
-                btnAgc.setBackgroundColor(0xFF008800.toInt())
-                Toast.makeText(this, "UART: Авто-контраст включен", Toast.LENGTH_SHORT).show()
-            } else {
-                btnAgc.text = "РУЧН КОНТРАСТ"
-                btnAgc.setBackgroundColor(0xFFCC7000.toInt())
-                Toast.makeText(this, "UART: Контраст зафиксирован (Manual)", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        btnContrastType.setOnClickListener {
-            showPaletteDialog()
         }
 
         btnTracking.setOnClickListener {
@@ -570,10 +565,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        btnResolution.setOnClickListener {
-            showResolutionDialog()
-        }
-
         btnCalibrate.setOnClickListener {
             crosshairOverlay.isCalibrationMode = !crosshairOverlay.isCalibrationMode
             if (crosshairOverlay.isCalibrationMode) {
@@ -582,7 +573,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Перемещайте оптический прицел пальцем", Toast.LENGTH_SHORT).show()
             } else {
                 btnCalibrate.text = "ЮСТИРОВКА"
-                btnCalibrate.setBackgroundColor(0xFF444444.toInt())
+                btnCalibrate.setBackgroundColor(0xFF333333.toInt())
 
                 val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
                 prefs.edit()
@@ -595,26 +586,351 @@ class MainActivity : AppCompatActivity() {
             crosshairOverlay.invalidate()
         }
 
-        btnSound.setOnClickListener {
-            alertManager.isSoundEnabled = !alertManager.isSoundEnabled
-            if (alertManager.isSoundEnabled) {
-                btnSound.text = "ЗВУК: ВКЛ"
-                btnSound.setBackgroundColor(0xFF008800.toInt())
-            } else {
-                btnSound.text = "ЗВУК: ВЫКЛ"
-                btnSound.setBackgroundColor(0xFF444444.toInt())
+        // КНОПКА ЗУМА: короткое переключение 0x -> 1x -> 2x -> 3x
+        btnZoom.setOnClickListener {
+            currentZoomIndex = (currentZoomIndex + 1) % 4
+            val zoomFactor = when (currentZoomIndex) {
+                0 -> 1.0f
+                1 -> 2.0f
+                2 -> 3.0f
+                else -> 4.0f
             }
+            btnZoom.text = "ЗУМ: " + currentZoomIndex + "x"
+            cameraView.scaleX = zoomFactor
+            cameraView.scaleY = zoomFactor
+            serialController.setElectronicZoom(zoomFactor)
         }
 
-        btnFlash.setOnClickListener {
-            alertManager.isFlashEnabled = !alertManager.isFlashEnabled
-            if (alertManager.isFlashEnabled) {
-                btnFlash.text = "СТРОБ: ВКЛ"
-                btnFlash.setBackgroundColor(0xFFFF8800.toInt())
-            } else {
-                btnFlash.text = "СТРОБ: ВЫКЛ"
-                btnFlash.setBackgroundColor(0xFF444444.toInt())
+        btnContrastType.setOnClickListener {
+            showPaletteDialog()
+        }
+    }
+
+    /**
+     * Меню настроек (Шестеренка ⚙)
+     */
+    private fun showSettingsDialog() {
+        val soundState = if (alertManager.isSoundEnabled) "ВКЛ" else "ВЫКЛ"
+        val flashState = if (alertManager.isFlashEnabled) "ВКЛ" else "ВЫКЛ"
+
+        val items = arrayOf(
+            "Пропорции тепловизора (4:3, 5:4, 16:9)",
+            "Звуковая тревога: $soundState",
+            "Световой стробоскоп: $flashState",
+            "Выбор UART порта (CH340/CP2102)",
+            "Откалибровать шторку (NUC / Shutter)"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("⚙ Настройки прибора")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> showResolutionDialog()
+                    1 -> {
+                        alertManager.isSoundEnabled = !alertManager.isSoundEnabled
+                        Toast.makeText(this, "Звук: " + if (alertManager.isSoundEnabled) "ВКЛ" else "ВЫКЛ", Toast.LENGTH_SHORT).show()
+                    }
+                    2 -> {
+                        alertManager.isFlashEnabled = !alertManager.isFlashEnabled
+                        Toast.makeText(this, "Строб: " + if (alertManager.isFlashEnabled) "ВКЛ" else "ВЫКЛ", Toast.LENGTH_SHORT).show()
+                    }
+                    3 -> showUartSelectionDialog()
+                    4 -> {
+                        serialController.triggerShutter()
+                        Toast.makeText(this, "Калибровка шторки отправлена", Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    /**
+     * Повторный опрос и переподключение USB устройств
+     */
+    private fun rescanUsbDevices() {
+        Toast.makeText(this, "Повторный опрос USB устройств...", Toast.LENGTH_SHORT).show()
+        try {
+            initCameraHelper()
+            initUsbSerial()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Ошибка опроса: " + e.message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * Фотоснимок экрана (WYSIWYG: ровно то, что видит оператор)
+     */
+    private fun takeScreenshotPhoto() {
+        val w = rootLayout.width
+        val h = rootLayout.height
+        if (w <= 0 || h <= 0) return
+
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        try {
+            PixelCopy.request(window, bmp, { result ->
+                if (result == PixelCopy.SUCCESS) {
+                    saveBitmapToGallery(bmp)
+                } else {
+                    bmp.recycle()
+                    Toast.makeText(this, "Не удалось создать снимок", Toast.LENGTH_SHORT).show()
+                }
+            }, mainHandler)
+        } catch (e: Exception) {
+            bmp.recycle()
+        }
+    }
+
+    private fun saveBitmapToGallery(bitmap: Bitmap) {
+        val dir = getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: filesDir
+        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val file = File(dir, "IMG_$timeStamp.jpg")
+
+        try {
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+            }
+            Toast.makeText(this, "Фото сохранено: " + file.name, Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Ошибка сохранения фото", Toast.LENGTH_SHORT).show()
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    /**
+     * Запуск/Остановка записи экрана
+     */
+    private fun toggleVideoRecording() {
+        if (!isRecording) {
+            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
+        } else {
+            stopVideoRecording()
+        }
+    }
+
+    private fun startMediaRecorderInternal() {
+        val projection = mediaProjection ?: return
+        val dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: filesDir
+        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        currentRecordFile = File(dir, "REC_$timeStamp.mp4")
+
+        val width = rootLayout.width.takeIf { it > 0 } ?: 1920
+        val height = rootLayout.height.takeIf { it > 0 } ?: 1080
+
+        try {
+            @Suppress("DEPRECATION")
+            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(this)
+            } else {
+                MediaRecorder()
+            }.apply {
+                setVideoSource(MediaRecorder.VideoSource.SURFACE)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setOutputFile(currentRecordFile!!.absolutePath)
+                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+                setVideoSize(width, height)
+                setVideoFrameRate(30)
+                setVideoEncodingBitRate(6 * 1024 * 1024)
+                prepare()
+            }
+
+            virtualDisplay = projection.createVirtualDisplay(
+                "ScreenRecorder",
+                width,
+                height,
+                resources.displayMetrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                mediaRecorder!!.surface,
+                null,
+                null
+            )
+
+            mediaRecorder!!.start()
+            isRecording = true
+            recordDurationSec = 0
+            updateRecordUiState()
+            recordTimerHandler.post(recordTimerRunnable)
+
+            // Контроль объема памяти авторегистратора
+            enforceStorageLimit(dir)
+        } catch (e: Exception) {
+            stopVideoRecording()
+            Toast.makeText(this, "Ошибка старта записи: " + e.message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun restartRecordSegment() {
+        try {
+            mediaRecorder?.stop()
+            mediaRecorder?.reset()
+        } catch (e: Exception) {}
+
+        val dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: filesDir
+        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        currentRecordFile = File(dir, "REC_$timeStamp.mp4")
+
+        val width = rootLayout.width.takeIf { it > 0 } ?: 1920
+        val height = rootLayout.height.takeIf { it > 0 } ?: 1080
+
+        try {
+            mediaRecorder?.apply {
+                setVideoSource(MediaRecorder.VideoSource.SURFACE)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setOutputFile(currentRecordFile!!.absolutePath)
+                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+                setVideoSize(width, height)
+                setVideoFrameRate(30)
+                setVideoEncodingBitRate(6 * 1024 * 1024)
+                prepare()
+                start()
+            }
+            recordDurationSec = 0
+            enforceStorageLimit(dir)
+        } catch (e: Exception) {
+            stopVideoRecording()
+        }
+    }
+
+    private fun stopVideoRecording() {
+        isRecording = false
+        recordTimerHandler.removeCallbacks(recordTimerRunnable)
+        try {
+            mediaRecorder?.stop()
+            mediaRecorder?.reset()
+            mediaRecorder?.release()
+        } catch (e: Exception) {}
+        mediaRecorder = null
+
+        virtualDisplay?.release()
+        virtualDisplay = null
+
+        mediaProjection?.stop()
+        mediaProjection = null
+
+        updateRecordUiState()
+        Toast.makeText(this, "Запись сохранена", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Автоочистка старых роликов (видеорегистратор: лимит 20 файлов)
+     */
+    private fun enforceStorageLimit(dir: File) {
+        val files = dir.listFiles { f -> f.extension == "mp4" }?.sortedBy { it.lastModified() }
+        if (files != null && files.size > 20) {
+            val toDeleteCount = files.size - 20
+            for (i in 0 until toDeleteCount) {
+                files[i].delete()
+            }
+        }
+    }
+
+    private fun updateRecordUiState() {
+        if (isRecording) {
+            btnRecord.text = "СТОП ⏹"
+            btnRecord.setBackgroundColor(0xFF00C853.toInt()) // Зеленый стоп
+            tvRecordIndicator.visibility = View.VISIBLE
+        } else {
+            btnRecord.text = "ЗАПИСЬ ⏺"
+            btnRecord.setBackgroundColor(0xFFB71C1C.toInt()) // Красный старт
+            val modeLabel = if (isLoopRecordMode) "ЦИКЛ (3м)" else "НЕПРЕРЫВ"
+            tvRecordIndicator.text = "РЕЖИМ: $modeLabel"
+            tvRecordIndicator.visibility = View.VISIBLE
+        }
+    }
+
+    private fun showRecordModeDialog() {
+        val modes = arrayOf("Циклическая запись (по 3 мин)", "Непрерывная запись")
+        AlertDialog.Builder(this)
+            .setTitle("Режим видеорегистратора:")
+            .setItems(modes) { _, which ->
+                isLoopRecordMode = (which == 0)
+                updateRecordUiState()
+                val text = if (isLoopRecordMode) "Включен циклический режим (по 3 мин)" else "Включен непрерывный режим"
+                Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun showUartSelectionDialog() {
+        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+        val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
+
+        if (drivers.isEmpty()) {
+            val allUsbDevices = usbManager.deviceList.values.toList()
+            val msg = if (allUsbDevices.isEmpty()) {
+                "USB-устройства не обнаружены. Проверьте OTG-кабель и хаб."
+            } else {
+                val names = allUsbDevices.joinToString("\n") {
+                    String.format(Locale.US, "%s (VID:%04X PID:%04X)", it.deviceName, it.vendorId, it.productId)
+                }
+                "COM-порт не распознан. Подключенные USB:\n$names"
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Преобразователь UART")
+                .setMessage(msg)
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+
+        val items = Array(drivers.size) { i ->
+            val d = drivers[i].device
+            val friendly = serialController.getFriendlyName(d)
+            val hasPerm = if (usbManager.hasPermission(d)) "[Доступ есть]" else "[Запросить доступ]"
+            String.format(Locale.US, "%s %s (VID:%04X)", friendly, hasPerm, d.vendorId)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Выберите UART преобразователь:")
+            .setItems(items) { _, which ->
+                val selectedDriver = drivers[which]
+                val device = selectedDriver.device
+
+                if (usbManager.hasPermission(device)) {
+                    if (serialController.connectWithDriver(this, selectedDriver)) {
+                        Toast.makeText(this, "Подключено: " + serialController.connectedDeviceName + " (115200 8N1)", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this, "Не удалось открыть порт", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    requestUsbPermission(device)
+                }
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun requestUsbPermission(device: UsbDevice) {
+        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+        val intent = Intent(actionUsbPermission).apply {
+            setPackage(packageName)
+        }
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val permissionIntent = PendingIntent.getBroadcast(this, 0, intent, flags)
+        usbManager.requestPermission(device, permissionIntent)
+    }
+
+    private fun initUsbSerial(targetDevice: UsbDevice? = null) {
+        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+        val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
+
+        if (drivers.isEmpty()) return
+
+        val driver = if (targetDevice != null) {
+            drivers.firstOrNull { it.device == targetDevice } ?: drivers[0]
+        } else {
+            drivers[0]
+        }
+        val device = driver.device
+
+        if (usbManager.hasPermission(device)) {
+            serialController.connect(this, device)
         }
     }
 
@@ -637,78 +953,6 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "UART: Палитра " + paletteShortNames[which], Toast.LENGTH_SHORT).show()
             }
             .show()
-    }
-
-    @SuppressLint("ClickableViewAccessibility")
-    private fun setupZoomGestures() {
-        val longPressHandler = Handler(Looper.getMainLooper())
-        var isLongPressTriggered = false
-        var downTime = 0L
-        var lastTouchAngle = 0.0
-
-        val longPressRunnable = Runnable {
-            isLongPressTriggered = true
-            crosshairOverlay.isZoomDialVisible = true
-            crosshairOverlay.currentZoomValue = currentContinuousZoom
-            crosshairOverlay.invalidate()
-        }
-
-        btnZoom.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    downTime = System.currentTimeMillis()
-                    isLongPressTriggered = false
-                    longPressHandler.postDelayed(longPressRunnable, 400)
-                    lastTouchAngle = 0.0
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (isLongPressTriggered) {
-                        val cx = rootLayout.width / 2.0
-                        val cy = rootLayout.height / 2.0
-                        val currentAngle = Math.toDegrees(atan2(event.rawY - cy, event.rawX - cx))
-
-                        if (lastTouchAngle != 0.0) {
-                            var delta = currentAngle - lastTouchAngle
-                            if (delta > 180) delta -= 360
-                            if (delta < -180) delta += 360
-
-                            val zoomStep = (delta / 40.0).toFloat()
-                            currentContinuousZoom = (currentContinuousZoom + zoomStep).coerceIn(1.0f, 4.0f)
-                            crosshairOverlay.currentZoomValue = currentContinuousZoom
-                            crosshairOverlay.invalidate()
-
-                            serialController.setElectronicZoom(currentContinuousZoom)
-                        }
-                        lastTouchAngle = currentAngle
-                    }
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    longPressHandler.removeCallbacks(longPressRunnable)
-                    if (isLongPressTriggered) {
-                        crosshairOverlay.isZoomDialVisible = false
-                        crosshairOverlay.invalidate()
-                        btnZoom.text = String.format("ЗУМ: %.1fx", currentContinuousZoom)
-                        serialController.setElectronicZoom(currentContinuousZoom)
-                    } else {
-                        if (System.currentTimeMillis() - downTime < 400) {
-                            currentZoomIndex = (currentZoomIndex + 1) % 4
-                            currentContinuousZoom = when (currentZoomIndex) {
-                                0 -> 1.0f
-                                1 -> 2.0f
-                                2 -> 3.0f
-                                else -> 4.0f
-                            }
-                            btnZoom.text = "ЗУМ: " + currentZoomIndex + "x"
-                            serialController.setElectronicZoom(currentContinuousZoom)
-                        }
-                    }
-                    true
-                }
-                else -> false
-            }
-        }
     }
 
     private fun applyHybridMode() {
@@ -790,11 +1034,6 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Пропорции тепловизора:")
             .setItems(resolutions) { _, which ->
-                btnResolution.text = when(which) {
-                    0 -> "4:3"
-                    1 -> "5:4"
-                    else -> "16:9"
-                }
                 rootLayout.post { updateOverlayBounds() }
             }
             .show()
@@ -825,6 +1064,8 @@ class MainActivity : AppCompatActivity() {
                     if (isVideoDevice(device)) {
                         runOnUiThread { tvStatus.text = "Подключение к плате: " + device.deviceName }
                         selectDevice(device)
+                    } else if (isSerialDevice(device)) {
+                        initUsbSerial(device)
                     }
                 }
 
@@ -865,6 +1106,10 @@ class MainActivity : AppCompatActivity() {
                 }
             })
         }
+    }
+
+    private fun isSerialDevice(device: UsbDevice): Boolean {
+        return UsbSerialProber.getDefaultProber().probeDevice(device) != null
     }
 
     override fun onDestroy() {
