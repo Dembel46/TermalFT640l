@@ -62,7 +62,7 @@ class InternalVideoRecorder(
     private val argbPixels = IntArray(width * height)
     private val yuvBuffer = ByteArray(width * height * 3 / 2)
 
-    // Кэш повёрнутых битмапов, чтобы не аллоцировать каждый кадр
+    // Кэши повёрнутых битмапов
     private var opticalRotatedCache: Bitmap? = null
     private var thermalRotatedCache: Bitmap? = null
 
@@ -98,6 +98,8 @@ class InternalVideoRecorder(
             startPtsUs = -1L
             lastPtsUs = 0L
             isBusyEncoding = false
+            opticalRotatedCache = null
+            thermalRotatedCache = null
             isRecording = true
 
             recordThread = HandlerThread("InternalEncoderThread").apply { start() }
@@ -152,7 +154,7 @@ class InternalVideoRecorder(
     ) {
         val codec = mediaCodec ?: return
 
-        // Применяем поворот к исходным битмапам ДО композита.
+        // Поворачиваем исходные битмапы ДО композита
         val thermalBmp = thermalBmpRaw?.let { rotateBitmapCached(it, thermalRotationDegrees, true) }
         val opticalBmp = opticalBmpRaw?.let { rotateBitmapCached(it, opticalRotationDegrees, false) }
 
@@ -264,33 +266,42 @@ class InternalVideoRecorder(
     }
 
     /**
-     * Поворачивает Bitmap на заданный угол. Если угол 0 — возвращает исходник.
-     * Кэширует результат, чтобы не аллоцировать каждый кадр при неизменном размере.
+     * Поворачивает Bitmap на заданный угол.
+     * Кэширует результат, чтобы не аллоцировать каждый кадр.
+     * ВАЖНО: очищаем кэш перед рисованием (иначе при 90°/270° в углах
+     * останутся старые пиксели), и сдвигаем картинку в (0,0) после поворота
+     * (иначе при 90°/180°/270° она уходит за границы кэша — чёрный кадр).
      */
     private fun rotateBitmapCached(src: Bitmap, degrees: Int, isThermal: Boolean): Bitmap {
         val norm = ((degrees % 360) + 360) % 360
         if (norm == 0) return src
 
-        val cache = if (isThermal) thermalRotatedCache else opticalRotatedCache
-        val matrix = Matrix()
-        matrix.postRotate(norm.toFloat())
-
-        // Для 90/270 меняем размеры
         val targetW = if (norm == 90 || norm == 270) src.height else src.width
         val targetH = if (norm == 90 || norm == 270) src.width else src.height
 
-        if (cache != null && cache.width == targetW && cache.height == targetH) {
-            val canvas = Canvas(cache)
-            canvas.drawBitmap(src, matrix, null)
-            return cache
+        val existing = if (isThermal) thermalRotatedCache else opticalRotatedCache
+        val cache: Bitmap = if (existing != null &&
+            existing.width == targetW && existing.height == targetH &&
+            !existing.isRecycled) {
+            existing
+        } else {
+            val newBmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+            if (isThermal) thermalRotatedCache = newBmp else opticalRotatedCache = newBmp
+            newBmp
         }
 
-        val newBmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(newBmp)
-        canvas.drawBitmap(src, matrix, null)
+        cache.eraseColor(Color.BLACK)
 
-        if (isThermal) thermalRotatedCache = newBmp else opticalRotatedCache = newBmp
-        return newBmp
+        val canvas = Canvas(cache)
+        val matrix = Matrix()
+        matrix.postRotate(norm.toFloat())
+        when (norm) {
+            90  -> matrix.postTranslate(src.height.toFloat(), 0f)
+            180 -> matrix.postTranslate(src.width.toFloat(), src.height.toFloat())
+            270 -> matrix.postTranslate(0f, src.width.toFloat())
+        }
+        canvas.drawBitmap(src, matrix, null)
+        return cache
     }
 
     private fun drawReticleMarks(canvas: Canvas, cx: Float, cy: Float, size: Float) {
