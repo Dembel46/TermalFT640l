@@ -52,7 +52,9 @@ class RecordingController(
     private val srcRect = Rect()
     private val dstRect = Rect(0, 0, opticalBmp.width, opticalBmp.height)
 
+    // Кэши последних удачных кадров — чтобы не было «чёрных» кадров
     private var lastOpticalFrame: Bitmap? = null
+    private var lastThermalFrame: Bitmap? = null
 
     @Volatile private var isRecording = false
     private var durationSec = 0
@@ -76,6 +78,7 @@ class RecordingController(
         durationSec = 0
         nextTickMs = SystemClock.uptimeMillis() + 1000L
         lastOpticalFrame = null
+        lastThermalFrame = null
         ui.onRecordingStateChanged(true)
 
         captureThread = HandlerThread("RecordCaptureThread").apply { start() }
@@ -91,6 +94,7 @@ class RecordingController(
         captureThread = null
         captureHandler = null
         lastOpticalFrame = null
+        lastThermalFrame = null
 
         val fileToExport = currentFile
         ui.onRecordingStateChanged(false)
@@ -131,12 +135,17 @@ class RecordingController(
             val thermalView = ui.thermalView
             val opticalView = ui.opticalView
 
-            val tBmp: Bitmap? = if (ui.isThermalStreaming() && thermalView != null && thermalView.isAvailable) {
+            // ---- Тепловизор: свежий кадр или последний удачный ----
+            var freshThermal: Bitmap? = null
+            if (ui.isThermalStreaming() && thermalView != null && thermalView.isAvailable) {
                 try {
-                    if (thermalView.getBitmap(thermalBmp) != null) thermalBmp else null
-                } catch (_: Exception) { null }
-            } else null
+                    if (thermalView.getBitmap(thermalBmp) != null) freshThermal = thermalBmp
+                } catch (_: Exception) { freshThermal = null }
+            }
+            if (freshThermal != null) lastThermalFrame = freshThermal
+            val tBmp: Bitmap? = freshThermal ?: lastThermalFrame
 
+            // ---- Оптика: свежий кадр или последний удачный ----
             var freshOptical: Bitmap? = null
             if (opticalView != null && opticalView.visibility == View.VISIBLE) {
                 val ref = AtomicReference<Bitmap?>(null)
@@ -160,8 +169,8 @@ class RecordingController(
                 freshOptical = ref.get()
                 if (freshOptical != null) lastOpticalFrame = freshOptical
             }
-
             val oBmp: Bitmap? = freshOptical ?: lastOpticalFrame
+
             val (optNormX, optNormY) = ui.getOpticalOffsetNorm()
 
             videoRecorder.queueFrame(
