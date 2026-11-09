@@ -15,9 +15,6 @@ class FT640SerialController {
     var connectedDeviceName: String = ""
         private set
 
-    /**
-     * Безопасное подключение к выбранному драйверу USB-UART
-     */
     fun connectWithDriver(context: Context, driver: UsbSerialDriver): Boolean {
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
@@ -63,7 +60,7 @@ class FT640SerialController {
     fun disconnect() {
         try {
             serialPort?.close()
-        } catch (_: Exception) {}
+        } catch (e: Exception) {}
         serialPort = null
         isConnected = false
         connectedDeviceName = ""
@@ -106,7 +103,7 @@ class FT640SerialController {
 
         try {
             serialPort?.write(packet, 500)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {}
     }
 
     fun setPalette(paletteCode: Int) {
