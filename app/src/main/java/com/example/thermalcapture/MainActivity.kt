@@ -2,12 +2,19 @@ package com.example.thermalcapture
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
@@ -34,9 +41,12 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.herohan.uvcapp.CameraHelper
 import com.herohan.uvcapp.ICameraHelper
+import com.hoho.android.usbserial.driver.UsbSerialProber
 import kotlin.math.atan2
 
 class MainActivity : AppCompatActivity() {
+
+    private val actionUsbPermission = "com.example.thermalcapture.USB_SERIAL_PERMISSION"
 
     private lateinit var rootLayout: ConstraintLayout
     private lateinit var cameraContainer: FrameLayout
@@ -61,7 +71,9 @@ class MainActivity : AppCompatActivity() {
     private var cameraHelper: ICameraHelper? = null
     private var thermalSurface: Surface? = null
 
+    // Аппаратный контроллер FT640L по UART
     private val serialController = FT640SerialController()
+
     private val visionEngine = ThermalVisionEngine()
     private lateinit var alertManager: AlertManager
 
@@ -81,10 +93,33 @@ class MainActivity : AppCompatActivity() {
     private var isThermalFullscreen = false
     private var isHybridModeActive = false
 
-    // Настройки тепловизора FT640L
+    // Настройки ядра FT640L
     private var isAutoAgc = true
     private var currentZoomIndex = 0
     private var currentContinuousZoom = 1.0f
+
+    private val usbReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (actionUsbPermission == intent.action) {
+                synchronized(this) {
+                    val device: UsbDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                    }
+
+                    if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                        device?.let {
+                            if (serialController.connect(this@MainActivity, it)) {
+                                Toast.makeText(this@MainActivity, "UART FT640L подключен (115200)", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -132,8 +167,46 @@ class MainActivity : AppCompatActivity() {
         setupZoomGestures()
         checkPermissionsAndInit()
 
+        // Регистрация приемника для USB Serial
+        val filter = IntentFilter(actionUsbPermission)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(usbReceiver, filter)
+        }
+
+        // Попытка авто-подключения к USB-UART
+        initUsbSerial()
+
         rootLayout.post {
             setSplitRatio(0.7f, 0.3f, "70/30")
+        }
+    }
+
+    /**
+     * Поиск и открытие USB-UART адаптера через UsbManager
+     */
+    private fun initUsbSerial() {
+        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+        val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
+
+        if (drivers.isNotEmpty()) {
+            val driver = drivers[0]
+            val device = driver.device
+
+            if (usbManager.hasPermission(device)) {
+                if (serialController.connect(this, device)) {
+                    Toast.makeText(this, "UART FT640L активен (115200)", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                } else {
+                    PendingIntent.FLAG_UPDATE_CURRENT
+                }
+                val permissionIntent = PendingIntent.getBroadcast(this, 0, Intent(actionUsbPermission), flags)
+                usbManager.requestPermission(device, permissionIntent)
+            }
         }
     }
 
@@ -346,18 +419,19 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Аппаратное переключение Авто / Ручной контраст по UART
         btnAgc.setOnClickListener {
             isAutoAgc = !isAutoAgc
+            serialController.setAutoContrast(isAutoAgc)
+
             if (isAutoAgc) {
                 btnAgc.text = "АВТО КОНТРАСТ"
                 btnAgc.setBackgroundColor(0xFF008800.toInt())
-                serialController.setAutoContrast(true)
-                Toast.makeText(this, "Контраст: АВТО", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "UART: Авто-контраст включен", Toast.LENGTH_SHORT).show()
             } else {
                 btnAgc.text = "РУЧН КОНТРАСТ"
                 btnAgc.setBackgroundColor(0xFFCC7000.toInt())
-                serialController.setAutoContrast(false)
-                Toast.makeText(this, "Контраст: РУЧНОЙ (Зафиксирован)", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "UART: Контраст зафиксирован (Manual)", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -467,6 +541,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Меню выбора палитры (отправка команды 0x42 в ядро FT640L)
+     */
     private fun showPaletteDialog() {
         val palettes = arrayOf(
             "Горячий белый (White Hot)",
@@ -483,11 +560,14 @@ class MainActivity : AppCompatActivity() {
             .setItems(palettes) { _, which ->
                 btnContrastType.text = "КОНТРАСТ: " + paletteShortNames[which]
                 serialController.setPalette(paletteCodes[which])
-                Toast.makeText(this, "Палитра: " + palettes[which], Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "UART: Палитра " + paletteShortNames[which], Toast.LENGTH_SHORT).show()
             }
             .show()
     }
 
+    /**
+     * Аппаратный зум: короткий клик и круговой нониус при зажатии
+     */
     @SuppressLint("ClickableViewAccessibility")
     private fun setupZoomGestures() {
         val longPressHandler = Handler(Looper.getMainLooper())
@@ -527,7 +607,8 @@ class MainActivity : AppCompatActivity() {
                             crosshairOverlay.currentZoomValue = currentContinuousZoom
                             crosshairOverlay.invalidate()
 
-                            applyVisualZoom(currentContinuousZoom)
+                            // Отправка зума в ядро по UART в реальном времени
+                            serialController.setElectronicZoom(currentContinuousZoom)
                         }
                         lastTouchAngle = currentAngle
                     }
@@ -550,7 +631,6 @@ class MainActivity : AppCompatActivity() {
                                 else -> 4.0f
                             }
                             btnZoom.text = "ЗУМ: " + currentZoomIndex + "x"
-                            applyVisualZoom(currentContinuousZoom)
                             serialController.setElectronicZoom(currentContinuousZoom)
                         }
                     }
@@ -559,11 +639,6 @@ class MainActivity : AppCompatActivity() {
                 else -> false
             }
         }
-    }
-
-    private fun applyVisualZoom(zoom: Float) {
-        cameraView.scaleX = zoom
-        cameraView.scaleY = zoom
     }
 
     private fun applyHybridMode() {
@@ -679,6 +754,7 @@ class MainActivity : AppCompatActivity() {
                 override fun onAttach(device: UsbDevice) {
                     runOnUiThread { tvStatus.text = "Подключение к плате: " + device.deviceName }
                     selectDevice(device)
+                    initUsbSerial()
                 }
 
                 override fun onDeviceOpen(device: UsbDevice, isFirstOpen: Boolean) {
@@ -725,6 +801,10 @@ class MainActivity : AppCompatActivity() {
         isVisionRunning = false
         visionThread.quitSafely()
         alertManager.release()
+        try {
+            unregisterReceiver(usbReceiver)
+        } catch (e: Exception) {}
+        serialController.disconnect()
         thermalSurface?.release()
         cameraHelper?.release()
     }
