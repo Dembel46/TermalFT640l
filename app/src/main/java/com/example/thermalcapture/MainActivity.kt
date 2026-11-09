@@ -8,6 +8,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbDevice
@@ -53,13 +56,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnMode: Button
     private lateinit var btnCalibrate: Button
     private lateinit var btnTracking: Button
-    private lateinit var btnPhoto: Button
-    private lateinit var btnRecord: Button
+    private lateinit var btnPhoto: PhotoButtonView
+    private lateinit var btnRecord: RecordButtonView
+    private lateinit var btnThermalRotate: Button
     private lateinit var btnSettings: Button
     private lateinit var btnThermalFullscreen: Button
     private lateinit var btnHybrid: Button
     private lateinit var btnZoom: Button
     private lateinit var btnContrastType: Button
+
+    // Виньетка
+    private lateinit var flashOverlay: View
 
     private lateinit var storageManager: StorageManager
     private lateinit var settingsDialogs: SettingsDialogs
@@ -91,6 +98,11 @@ class MainActivity : AppCompatActivity() {
     private var thermalAspectW = 4
     private var thermalAspectH = 3
 
+    private var thermalRotationIndex = 0
+    private val rotationAngles = intArrayOf(0, 90, 180, 270)
+    private val thermalRotationDegrees: Int
+        get() = rotationAngles[thermalRotationIndex]
+
     private val sidebarHandler = Handler(Looper.getMainLooper())
     private val hideSidebarRunnable = Runnable { collapseSidebar() }
 
@@ -115,6 +127,9 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
+        thermalRotationIndex = prefs.getInt("thermalRotationIndex", 0).coerceIn(0, 3)
+        applyThermalRotation()
+
         crosshairOverlay.onHybridAlphaChanged = { alpha ->
             if (isHybridModeActive) cameraView.alpha = alpha
         }
@@ -164,13 +179,15 @@ class MainActivity : AppCompatActivity() {
         btnMode = findViewById(R.id.btnMode)
         btnCalibrate = findViewById(R.id.btnCalibrate)
         btnTracking = findViewById(R.id.btnTracking)
-        btnPhoto = findViewById(R.id.btnPhoto)
-        btnRecord = findViewById(R.id.btnRecord)
+        btnPhoto = findViewById(R.id.btnPhotoFloat)
+        btnRecord = findViewById(R.id.btnRecordCenter)
+        btnThermalRotate = findViewById(R.id.btnThermalRotate)
         btnSettings = findViewById(R.id.btnSettings)
         btnThermalFullscreen = findViewById(R.id.btnThermalFullscreen)
         btnHybrid = findViewById(R.id.btnHybrid)
         btnZoom = findViewById(R.id.btnZoom)
         btnContrastType = findViewById(R.id.btnContrastType)
+        flashOverlay = findViewById(R.id.flashOverlay)
     }
 
     private fun initControllers() {
@@ -198,7 +215,7 @@ class MainActivity : AppCompatActivity() {
                     rootLayout.post { updateOverlayBounds() }
                 }
                 override fun onPaletteChanged(code: Int, shortName: String) {
-                    btnContrastType.text = "КОНТРАСТ: $shortName"
+                    btnContrastType.text = "ПАЛИТРА: $shortName"
                 }
                 override fun onRescanUsb() { rescanUsb() }
                 override fun onStorageConfiguredThen(action: (() -> Unit)?) { action?.invoke() }
@@ -206,7 +223,7 @@ class MainActivity : AppCompatActivity() {
             })
 
         recordingController = RecordingController(this, storageManager,
-            InternalVideoRecorder(width = 1280, height = 720, frameRate = 20),
+            InternalVideoRecorder(width = 1280, height = 720, frameRate = 15),
             object : RecordingController.Ui {
                 override val thermalView: TextureView? get() = cameraView
                 override val opticalView: PreviewView? get() = phoneCameraView
@@ -226,7 +243,10 @@ class MainActivity : AppCompatActivity() {
                 override fun getDetectedTargets(): List<DetectedTarget> =
                     crosshairOverlay.detectedTargets
 
-                override fun getOpticalRotationDegrees(): Int = 0   // <-- правильная ориентация
+                override fun getOpticalRotationDegrees(): Int = 0
+
+                override fun getThermalRotationDegrees(): Int =
+                    this@MainActivity.thermalRotationDegrees
 
                 override fun onRecordingStateChanged(recording: Boolean) {
                     isRecording = recording
@@ -302,6 +322,19 @@ class MainActivity : AppCompatActivity() {
         btnCalibrate.setOnClickListener { resetSidebarTimer(); toggleCalibration() }
         btnZoom.setOnClickListener { resetSidebarTimer(); cycleZoom() }
         btnContrastType.setOnClickListener { resetSidebarTimer(); settingsDialogs.showPaletteDialog() }
+
+        btnThermalRotate.setOnClickListener {
+            thermalRotationIndex = (thermalRotationIndex + 1) % 4
+            applyThermalRotation()
+            getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
+                .edit().putInt("thermalRotationIndex", thermalRotationIndex).apply()
+            Toast.makeText(this, "Тепловизор: ${thermalRotationDegrees}°", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun applyThermalRotation() {
+        cameraView.rotation = thermalRotationDegrees.toFloat()
+        rootLayout.post { updateOverlayBounds() }
     }
 
     private fun initVisionPipeline() {
@@ -578,8 +611,10 @@ class MainActivity : AppCompatActivity() {
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         try {
             PixelCopy.request(window, bmp, { result ->
-                if (result == PixelCopy.SUCCESS) storageManager.savePhoto(bmp)
-                else {
+                if (result == PixelCopy.SUCCESS) {
+                    storageManager.savePhoto(bmp)
+                    showPhotoFlash()
+                } else {
                     bmp.recycle()
                     Toast.makeText(this, "Не удалось создать снимок", Toast.LENGTH_SHORT).show()
                 }
@@ -587,6 +622,21 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {
             bmp.recycle()
         }
+    }
+
+    /** Лёгкая белая виньетка по периметру на ~1.5 сек после фото. */
+    private fun showPhotoFlash() {
+        val overlay = flashOverlay ?: return
+        overlay.visibility = View.VISIBLE
+        overlay.alpha = 0f
+        overlay.animate()
+            .alpha(1f).setDuration(150).withEndAction {
+                overlay.animate()
+                    .alpha(0f).setDuration(1200)
+                    .withEndAction { overlay.visibility = View.GONE }
+                    .start()
+            }
+            .start()
     }
 
     private fun showRecordModeDialog() {
@@ -604,13 +654,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateRecordUiState() {
+        btnRecord.isRecording = isRecording
+
         if (isRecording) {
-            btnRecord.text = "СТОП ⏹"
-            btnRecord.setBackgroundColor(0xFF00C853.toInt())
+            // Красный скруглённый фон при записи
+            tvRecordIndicator.setBackgroundColor(0xCCE53935.toInt())
             tvRecordIndicator.visibility = View.VISIBLE
         } else {
-            btnRecord.text = "ЗАПИСЬ ⏺"
-            btnRecord.setBackgroundColor(0xFFB71C1C.toInt())
+            // Прозрачный фон в покое, белый текст
+            tvRecordIndicator.setBackgroundColor(Color.TRANSPARENT)
             val label = if (recordingController.isLoopRecording) "ЦИКЛ (3м)" else "НЕПРЕРЫВ"
             tvRecordIndicator.text = "РЕЖИМ: $label"
             tvRecordIndicator.visibility = View.VISIBLE
