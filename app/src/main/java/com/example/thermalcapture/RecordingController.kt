@@ -1,16 +1,20 @@
 package com.example.thermalcapture
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Rect
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
+import android.view.Surface
 import android.view.TextureView
 import android.view.View
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.view.PreviewView
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Управляет циклом записи, захватывает кадры с обеих камер в фоновом потоке
@@ -49,6 +53,9 @@ class RecordingController(
 
     private val opticalBmp = Bitmap.createBitmap(640, 360, Bitmap.Config.ARGB_8888)
     private val thermalBmp = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888)
+    private val opticalCanvas = Canvas(opticalBmp)
+    private val srcRect = Rect()
+    private val dstRect = Rect(0, 0, opticalBmp.width, opticalBmp.height)
 
     @Volatile private var isRecording = false
     private var durationSec = 0
@@ -98,7 +105,6 @@ class RecordingController(
         }
     }
 
-    /** Для циклического режима: закрыть текущий сегмент и открыть новый без остановки UI. */
     private fun restartSegment() {
         val oldFile = currentFile
         videoRecorder.stop {
@@ -127,7 +133,6 @@ class RecordingController(
                 restartSegment()
             }
 
-            // Тик каждые 1000 мс — обновление индикатора
             if (now >= nextTickMs) {
                 durationSec++
                 nextTickMs = now + 1000L
@@ -137,29 +142,37 @@ class RecordingController(
             val thermalView = ui.thermalView
             val opticalView = ui.opticalView
 
-            val tBmp: Bitmap? = if (ui.isThermalStreaming() && thermalView?.isAvailable == true) {
-                if (thermalView.getBitmap(thermalBmp)) thermalBmp else null
+            // Тепловизор: getBitmap(Bitmap) возвращает Bitmap? — проверяем на null
+            val tBmp: Bitmap? = if (ui.isThermalStreaming() && thermalView != null && thermalView.isAvailable) {
+                try {
+                    val result = thermalView.getBitmap(thermalBmp)
+                    if (result != null) thermalBmp else null
+                } catch (_: Exception) {
+                    null
+                }
             } else null
 
-            val oBmp: Bitmap? = if (opticalView?.visibility == View.VISIBLE) {
-                // PreviewView.getBitmap() должен вызываться на main. Переносим задачу туда.
+            // Оптика: PreviewView.getBitmap() на main + CountDownLatch с таймаутом
+            val oBmp: Bitmap? = if (opticalView != null && opticalView.visibility == View.VISIBLE) {
                 var result: Bitmap? = null
-                val latch = java.util.concurrent.CountDownLatch(1)
+                val latch = CountDownLatch(1)
                 mainHandler.post {
                     try {
                         val b = opticalView.bitmap
                         if (b != null) {
-                            // Копируем в наш буфер, чтобы не держать внутренний
-                            val src = android.graphics.Rect(0, 0, b.width, b.height)
-                            val dst = android.graphics.Rect(0, 0, opticalBmp.width, opticalBmp.height)
-                            val c = android.graphics.Canvas(opticalBmp)
-                            c.drawBitmap(b, src, dst, null)
+                            srcRect.set(0, 0, b.width, b.height)
+                            opticalCanvas.drawBitmap(b, srcRect, dstRect, null)
                             result = opticalBmp
                         }
-                    } catch (_: Exception) {}
-                    latch.countDown()
+                    } catch (_: Exception) {
+                    } finally {
+                        latch.countDown()
+                    }
                 }
-                latch.await(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+                try {
+                    latch.await(100, TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                }
                 result
             } else null
 
