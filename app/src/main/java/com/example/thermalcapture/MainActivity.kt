@@ -1,6 +1,7 @@
 package com.example.thermalcapture
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -35,6 +36,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
@@ -773,7 +775,6 @@ class MainActivity : AppCompatActivity() {
         if (!targetDir.exists()) {
             val created = targetDir.mkdirs()
             if (!created) {
-                // Надежный системный фолбэк при ограничениях Scoped Storage
                 val fallbackType = if (subfolder == "Photos") Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES
                 return getExternalFilesDir(fallbackType) ?: filesDir
             }
