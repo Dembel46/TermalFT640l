@@ -17,9 +17,7 @@ import android.view.MotionEvent
 import android.view.TextureView
 import android.view.View
 import androidx.camera.view.PreviewView
-import kotlin.math.cos
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
 class CrosshairView @JvmOverloads constructor(
     context: Context,
@@ -111,49 +109,15 @@ class CrosshairView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
-    // Кисти для кругового нониуса зума
-    private val dialTrackPaint = Paint().apply {
-        color = Color.parseColor("#99000000")
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
-
-    private val dialRingPaint = Paint().apply {
-        color = Color.parseColor("#448AFF")
-        style = Paint.Style.STROKE
-        strokeWidth = 3f * density
-        isAntiAlias = true
-    }
-
-    private val dialTickPaint = Paint().apply {
-        color = Color.WHITE
-        style = Paint.Style.STROKE
-        strokeWidth = 1.5f * density
-        isAntiAlias = true
-    }
-
-    private val dialTextPaint = Paint().apply {
-        color = Color.parseColor("#448AFF")
-        textSize = 18f * density
-        isFakeBoldText = true
-        textAlign = Paint.Align.CENTER
-        isAntiAlias = true
-    }
-
     private val taperPath = Path()
 
     var opticalOffsetX = 0f
     var opticalOffsetY = 0f
     var isCalibrationMode = false
 
-    // Режим "ГИБРИД" и значение прозрачности
     var isHybridMode = false
     var hybridAlpha = 0.5f
     var onHybridAlphaChanged: ((Float) -> Unit)? = null
-
-    // Нониус зума
-    var isZoomDialVisible = false
-    var currentZoomValue = 1.0f
 
     var thermalRect = RectF()
     var opticalRect = RectF()
@@ -348,7 +312,7 @@ class CrosshairView @JvmOverloads constructor(
             drawFastReticle(canvas, cx, cy, if (isThermalReady) thermalShader else null)
         }
 
-        // 3. Прицел оптической камеры (в обычном режиме)
+        // 3. Прицел оптической камеры
         if (isOpticalVisible && !isHybridMode) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
@@ -382,7 +346,7 @@ class CrosshairView @JvmOverloads constructor(
                 val tW = justTextPaint.measureText(text)
                 val tH = justTextPaint.textSize
                 val tagY = (cy - boxHalf - 8f * density).coerceAtLeast(opticalRect.top + tH + 6f * density)
-                val tagX = ((left + right) / 2f - tW / 2f).coerceIn(opticalRect.left + 6f * density, opticalRect.right - tW - 6f * density)
+                val tagX = (cx - tW / 2f).coerceIn(opticalRect.left + 6f * density, opticalRect.right - tW - 6f * density)
 
                 canvas.drawRect(tagX - 5f * density, tagY - tH - 3f * density, tagX + tW + 5f * density, tagY + 3f * density, justBgPaint)
                 canvas.drawText(text, tagX, tagY, justTextPaint)
@@ -406,30 +370,6 @@ class CrosshairView @JvmOverloads constructor(
 
             val percentText = String.format("ТЕПЛО %d%%", (hybridAlpha * 100).roundToInt())
             canvas.drawText(percentText, trackLeft, trackTop - 8f * density, sliderTextPaint)
-        }
-
-        // 5. ТАКТИЧЕСКИЙ КРУГОВОЙ НОНИУС ЗУМА (при удержании)
-        if (isZoomDialVisible) {
-            val dcX = width / 2f
-            val dcY = height / 2f
-            val dialRadius = 85f * density
-
-            canvas.drawCircle(dcX, dcY, dialRadius, dialTrackPaint)
-            canvas.drawCircle(dcX, dcY, dialRadius, dialRingPaint)
-
-            for (i in 0 until 30) {
-                val angleDeg = i * 12.0
-                val angleRad = Math.toRadians(angleDeg)
-                val rInner = if (i % 5 == 0) dialRadius - 12f * density else dialRadius - 6f * density
-                val x1 = (dcX + rInner * cos(angleRad)).toFloat()
-                val y1 = (dcY + rInner * sin(angleRad)).toFloat()
-                val x2 = (dcX + dialRadius * cos(angleRad)).toFloat()
-                val y2 = (dcY + dialRadius * sin(angleRad)).toFloat()
-                canvas.drawLine(x1, y1, x2, y2, dialTickPaint)
-            }
-
-            val zoomStr = String.format("%.1fx", currentZoomValue)
-            canvas.drawText(zoomStr, dcX, dcY + 6f * density, dialTextPaint)
         }
     }
 
