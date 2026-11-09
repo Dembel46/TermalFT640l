@@ -54,7 +54,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnCalibrate: Button
     private lateinit var btnTracking: Button
     private lateinit var btnPhoto: Button
-    private lateinit var btnRecord: Button
+    private lateinit var btnRecord: RecordButtonView      // <-- кастомная View
     private lateinit var btnThermalRotate: Button
     private lateinit var btnSettings: Button
     private lateinit var btnThermalFullscreen: Button
@@ -92,7 +92,6 @@ class MainActivity : AppCompatActivity() {
     private var thermalAspectW = 4
     private var thermalAspectH = 3
 
-    // Поворот тепловизора: 0 / 90 / 180 / 270
     private var thermalRotationIndex = 0
     private val rotationAngles = intArrayOf(0, 90, 180, 270)
     private val thermalRotationDegrees: Int
@@ -238,6 +237,7 @@ class MainActivity : AppCompatActivity() {
                 override fun getDetectedTargets(): List<DetectedTarget> =
                     crosshairOverlay.detectedTargets
 
+                // Проверено на вашем устройстве: 0 — правильная ориентация оптики
                 override fun getOpticalRotationDegrees(): Int = 0
 
                 override fun getThermalRotationDegrees(): Int =
@@ -632,13 +632,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateRecordUiState() {
+        // Кнопка: красный квадрат (idle) / красный круг (recording)
+        btnRecord.isRecording = isRecording
+
         if (isRecording) {
-            btnRecord.text = "⏹"
-            btnRecord.setBackgroundColor(0xFF00C853.toInt())
+            // Индикатор режима — красный при записи
+            tvRecordIndicator.setBackgroundColor(0xCC990000.toInt())
             tvRecordIndicator.visibility = View.VISIBLE
         } else {
-            btnRecord.text = "⏺"
-            btnRecord.setBackgroundColor(0xFFB71C1C.toInt())
+            // Индикатор режима — серый в покое
+            tvRecordIndicator.setBackgroundColor(0xCC333333.toInt())
             val label = if (recordingController.isLoopRecording) "ЦИКЛ (3м)" else "НЕПРЕРЫВ"
             tvRecordIndicator.text = "РЕЖИМ: $label"
             tvRecordIndicator.visibility = View.VISIBLE
