@@ -3,6 +3,7 @@ package com.example.thermalcapture
 import android.content.Context
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 
@@ -11,10 +12,35 @@ class FT640SerialController {
     private var serialPort: UsbSerialPort? = null
     var isConnected = false
         private set
+    var connectedDeviceName: String = ""
+        private set
 
     /**
-     * Безопасное подключение к USB-UART адаптеру (CH340, CP2102, FTDI) на 115200 8N1
+     * Подключение к выбранному драйверу USB-UART
      */
+    fun connectWithDriver(context: Context, driver: UsbSerialDriver): Boolean {
+        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+
+        try {
+            if (!usbManager.hasPermission(driver.device)) {
+                return false
+            }
+
+            val connection = usbManager.openDevice(driver.device) ?: return false
+            val port = driver.ports[0]
+
+            port.open(connection)
+            port.setParameters(115200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
+            serialPort = port
+            isConnected = true
+            connectedDeviceName = getFriendlyName(driver.device)
+            return true
+        } catch (e: Exception) {
+            disconnect()
+            return false
+        }
+    }
+
     fun connect(context: Context, device: UsbDevice? = null): Boolean {
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
         val availableDrivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
@@ -30,23 +56,7 @@ class FT640SerialController {
             availableDrivers[0]
         }
 
-        try {
-            if (!usbManager.hasPermission(driver.device)) {
-                return false
-            }
-
-            val connection = usbManager.openDevice(driver.device) ?: return false
-            val port = driver.ports[0]
-
-            port.open(connection)
-            port.setParameters(115200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
-            serialPort = port
-            isConnected = true
-            return true
-        } catch (e: Exception) {
-            disconnect()
-            return false
-        }
+        return connectWithDriver(context, driver)
     }
 
     fun disconnect() {
@@ -55,12 +65,21 @@ class FT640SerialController {
         } catch (e: Exception) {}
         serialPort = null
         isConnected = false
+        connectedDeviceName = ""
     }
 
-    /**
-     * Сборка и отправка заводского пакета InfiRay XCore:
-     * 0xAA + Length + CW0 + CW1 + OW + Params + CheckSum + 0xEB + 0xAA
-     */
+    fun getFriendlyName(device: UsbDevice): String {
+        val vid = device.vendorId
+        val pid = device.productId
+        return when {
+            vid == 0x1A86 -> "CH340/CH341"
+            vid == 0x10C4 -> "CP2102/CP210x"
+            vid == 0x0403 -> "FTDI"
+            vid == 0x067B -> "PL2303"
+            else -> device.productName ?: String.format("USB-UART (%04X:%04X)", vid, pid)
+        }
+    }
+
     private fun sendCommand(cw0: Int, cw1: Int, ow: Int, params: ByteArray = byteArrayOf()) {
         val length = 2 + 1 + params.size + 1
         val totalSize = 1 + 1 + length + 2
