@@ -27,8 +27,13 @@ class InternalVideoRecorder(
 
     private var recordThread: HandlerThread? = null
     private var recordHandler: Handler? = null
+
+    @Volatile
     var isRecording = false
         private set
+
+    @Volatile
+    private var isBusyEncoding = false
 
     private val compositeBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     private val compositeCanvas = Canvas(compositeBitmap)
@@ -39,19 +44,19 @@ class InternalVideoRecorder(
     private val argbPixels = IntArray(width * height)
     private val yuvBuffer = ByteArray(width * height * 3 / 2)
     private var frameIndex = 0L
+    private var lastPtsUs = 0L
 
-    fun start(
-        outputFile: File,
-        frameSupplier: () -> RecordFrameData?
-    ): Boolean {
+    fun start(outputFile: File): Boolean {
         if (isRecording) return false
 
         try {
+            outputFile.parentFile?.mkdirs()
+
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
                 setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // Ключевой кадр каждую секунду для регистратора
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
 
             val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -63,79 +68,105 @@ class InternalVideoRecorder(
             isMuxerStarted = false
             videoTrackIndex = -1
             frameIndex = 0L
+            lastPtsUs = 0L
+            isBusyEncoding = false
             isRecording = true
 
-            recordThread = HandlerThread("InternalRecorderThread").apply { start() }
+            recordThread = HandlerThread("InternalEncoderThread").apply { start() }
             recordHandler = Handler(recordThread!!.looper)
 
-            val frameIntervalMs = 1000L / frameRate
-            recordHandler?.post(object : Runnable {
-                override fun run() {
-                    if (!isRecording) return
-                    encodeNextFrame(frameSupplier)
-                    drainCodec(false)
-                    recordHandler?.postDelayed(this, frameIntervalMs)
-                }
-            })
-
             return true
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             stop()
             return false
         }
     }
 
-    private fun encodeNextFrame(frameSupplier: () -> RecordFrameData?) {
-        val codec = mediaCodec ?: return
-        val data = frameSupplier() ?: return
+    /**
+     * Потокобезопасная очередь: кадры забираются в UI-потоке, а сведение и кодирование идут в фоне
+     */
+    fun queueFrame(
+        thermalBmp: Bitmap?,
+        opticalBmp: Bitmap?,
+        displayMode: Int,
+        isHybrid: Boolean,
+        hybridAlpha: Float
+    ) {
+        if (!isRecording || isBusyEncoding) {
+            thermalBmp?.recycle()
+            opticalBmp?.recycle()
+            return
+        }
 
-        // 1. Отрисовка композитного кадра ровно по текущему режиму приложения
+        isBusyEncoding = true
+        recordHandler?.post {
+            try {
+                processCompositeFrame(thermalBmp, opticalBmp, displayMode, isHybrid, hybridAlpha)
+                drainCodec(false)
+            } catch (t: Throwable) {
+            } finally {
+                thermalBmp?.recycle()
+                opticalBmp?.recycle()
+                isBusyEncoding = false
+            }
+        }
+    }
+
+    private fun processCompositeFrame(
+        thermalBmp: Bitmap?,
+        opticalBmp: Bitmap?,
+        displayMode: Int,
+        isHybrid: Boolean,
+        hybridAlpha: Float
+    ) {
+        val codec = mediaCodec ?: return
+
+        // Отрисовка кадра в соответствии с текущим режимом экрана приложения
         compositeCanvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), clearPaint)
 
         when {
-            data.isHybrid -> {
-                // ГИБРИД: Оптика на весь экран, тепловизор центрирован 4:3 с прозрачностью
-                data.opticalBmp?.let {
+            isHybrid -> {
+                opticalBmp?.let {
                     val src = Rect(0, 0, it.width, it.height)
                     val dst = Rect(0, 0, width, height)
                     compositeCanvas.drawBitmap(it, src, dst, bitmapPaint)
                 }
-                data.thermalBmp?.let {
+                thermalBmp?.let {
                     val tH = (height * 0.9f).toInt()
                     val tW = (tH * 4f / 3f).toInt().coerceAtMost(width)
                     val left = (width - tW) / 2
                     val top = (height - tH) / 2
                     val src = Rect(0, 0, it.width, it.height)
                     val dst = Rect(left, top, left + tW, top + tH)
-                    hybridPaint.alpha = (data.hybridAlpha * 255).toInt().coerceIn(0, 255)
+                    hybridPaint.alpha = (hybridAlpha * 255).toInt().coerceIn(0, 255)
                     compositeCanvas.drawBitmap(it, src, dst, hybridPaint)
                 }
             }
-            data.displayMode == 0 -> {
-                // 70 / 30: Тепловизор слева 70%, оптика справа 30%
+            displayMode == 0 -> {
+                // 70 / 30
                 val splitX = (width * 0.7f).toInt()
-                data.thermalBmp?.let {
+                thermalBmp?.let {
                     val src = Rect(0, 0, it.width, it.height)
                     val dst = Rect(0, 0, splitX, height)
                     compositeCanvas.drawBitmap(it, src, dst, bitmapPaint)
                 }
-                data.opticalBmp?.let {
+                opticalBmp?.let {
                     val src = Rect(0, 0, it.width, it.height)
                     val dst = Rect(splitX, 0, width, height)
                     compositeCanvas.drawBitmap(it, src, dst, bitmapPaint)
                 }
             }
-            data.displayMode == 1 -> {
+            displayMode == 1 -> {
                 // ТЕПЛО 100%
-                data.thermalBmp?.let {
+                thermalBmp?.let {
                     val src = Rect(0, 0, it.width, it.height)
                     val dst = Rect(0, 0, width, height)
                     compositeCanvas.drawBitmap(it, src, dst, bitmapPaint)
                 }
             }
-            data.displayMode == 2 -> {
+            displayMode == 2 -> {
                 // ОПТИКА 100%
-                data.opticalBmp?.let {
+                opticalBmp?.let {
                     val src = Rect(0, 0, it.width, it.height)
                     val dst = Rect(0, 0, width, height)
                     compositeCanvas.drawBitmap(it, src, dst, bitmapPaint)
@@ -143,19 +174,20 @@ class InternalVideoRecorder(
             }
         }
 
-        // 2. Быстрый перевод RGB в NV12
         compositeBitmap.getPixels(argbPixels, 0, width, 0, 0, width, height)
         convertArgbToNv12(argbPixels, yuvBuffer, width, height)
 
-        // 3. Отправка кадра в аппаратный энкодер
         val inputIndex = codec.dequeueInputBuffer(10_000)
         if (inputIndex >= 0) {
             val inputBuffer = codec.getInputBuffer(inputIndex)
-            inputBuffer?.clear()
-            inputBuffer?.put(yuvBuffer)
-            val pts = frameIndex * (1_000_000L / frameRate)
-            frameIndex++
-            codec.queueInputBuffer(inputIndex, 0, yuvBuffer.size, pts, 0)
+            if (inputBuffer != null) {
+                inputBuffer.clear()
+                val bytesToCopy = minOf(yuvBuffer.size, inputBuffer.capacity())
+                inputBuffer.put(yuvBuffer, 0, bytesToCopy)
+                val pts = frameIndex * (1_000_000L / frameRate)
+                frameIndex++
+                codec.queueInputBuffer(inputIndex, 0, bytesToCopy, pts, 0)
+            }
         }
     }
 
@@ -165,18 +197,23 @@ class InternalVideoRecorder(
         val bufferInfo = MediaCodec.BufferInfo()
 
         while (true) {
-            val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000)
+            val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
             if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
                 if (!endOfStream) break
             } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                if (isMuxerStarted) continue
-                val newFormat = codec.outputFormat
-                videoTrackIndex = muxer.addTrack(newFormat)
-                muxer.start()
-                isMuxerStarted = true
+                if (!isMuxerStarted) {
+                    videoTrackIndex = muxer.addTrack(codec.outputFormat)
+                    muxer.start()
+                    isMuxerStarted = true
+                }
             } else if (outputIndex >= 0) {
                 val outputBuffer = codec.getOutputBuffer(outputIndex)
                 if (outputBuffer != null && isMuxerStarted && bufferInfo.size > 0) {
+                    if (bufferInfo.presentationTimeUs < lastPtsUs) {
+                        bufferInfo.presentationTimeUs = lastPtsUs + 1000L
+                    }
+                    lastPtsUs = bufferInfo.presentationTimeUs
+
                     outputBuffer.position(bufferInfo.offset)
                     outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
                     muxer.writeSampleData(videoTrackIndex, outputBuffer, bufferInfo)
@@ -243,12 +280,4 @@ class InternalVideoRecorder(
             }
         }
     }
-
-    data class RecordFrameData(
-        val thermalBmp: Bitmap?,
-        val opticalBmp: Bitmap?,
-        val displayMode: Int,
-        val isHybrid: Boolean,
-        val hybridAlpha: Float
-    )
 }
