@@ -7,19 +7,13 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
-import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.view.PreviewView
 import java.io.File
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
-/**
- * Управляет циклом записи, захватывает кадры с обеих камер в фоновом потоке
- * и передаёт их в InternalVideoRecorder. Устраняет фризы UI.
- */
 class RecordingController(
     private val activity: AppCompatActivity,
     private val storageManager: StorageManager,
@@ -43,7 +37,8 @@ class RecordingController(
     }
 
     companion object {
-        private const val FRAME_INTERVAL_MS = 40L // 25 FPS
+        private const val FRAME_INTERVAL_MS = 50L   // 20 FPS запись
+        private const val OPTICAL_EVERY_N = 2       // оптика раз в 2 кадра = 10 FPS
         private const val LOOP_SEGMENT_SEC = 180
     }
 
@@ -62,6 +57,7 @@ class RecordingController(
     private var isLoopMode = true
     private var currentFile: File? = null
     private var nextTickMs = 0L
+    private var frameCounter = 0
 
     var isLoopRecording: Boolean
         get() = isLoopMode
@@ -69,17 +65,15 @@ class RecordingController(
 
     fun start() {
         if (isRecording) return
-
         currentFile = storageManager.makeTempMovieFile()
         val file = currentFile ?: return
-
         if (!videoRecorder.start(file)) {
             ui.onRecordingError("Не удалось запустить видеозапись")
             return
         }
-
         isRecording = true
         durationSec = 0
+        frameCounter = 0
         nextTickMs = SystemClock.uptimeMillis() + 1000L
         ui.onRecordingStateChanged(true)
 
@@ -110,12 +104,8 @@ class RecordingController(
         videoRecorder.stop {
             mainHandler.post { oldFile?.let { storageManager.exportVideo(it) } }
         }
-
         currentFile = storageManager.makeTempMovieFile()
-        val file = currentFile ?: run {
-            stop()
-            return
-        }
+        val file = currentFile ?: run { stop(); return }
         if (!videoRecorder.start(file)) {
             ui.onRecordingError("Не удалось перезапустить запись")
             stop()
@@ -129,51 +119,46 @@ class RecordingController(
             if (!isRecording) return
 
             val now = SystemClock.uptimeMillis()
-            if (isLoopMode && durationSec >= LOOP_SEGMENT_SEC) {
-                restartSegment()
-            }
-
+            if (isLoopMode && durationSec >= LOOP_SEGMENT_SEC) restartSegment()
             if (now >= nextTickMs) {
                 durationSec++
                 nextTickMs = now + 1000L
                 mainHandler.post { ui.onRecordingTick(durationSec) }
             }
 
+            frameCounter++
+
             val thermalView = ui.thermalView
             val opticalView = ui.opticalView
 
-            // Тепловизор: getBitmap(Bitmap) возвращает Bitmap? — проверяем на null
+            // Тепловизор — getBitmap(Bitmap) возвращает Bitmap? (null если не готов)
             val tBmp: Bitmap? = if (ui.isThermalStreaming() && thermalView != null && thermalView.isAvailable) {
                 try {
-                    val result = thermalView.getBitmap(thermalBmp)
-                    if (result != null) thermalBmp else null
-                } catch (_: Exception) {
-                    null
-                }
+                    if (thermalView.getBitmap(thermalBmp) != null) thermalBmp else null
+                } catch (_: Exception) { null }
             } else null
 
-            // Оптика: PreviewView.getBitmap() на main + CountDownLatch с таймаутом
-            val oBmp: Bitmap? = if (opticalView != null && opticalView.visibility == View.VISIBLE) {
-                var result: Bitmap? = null
-                val latch = CountDownLatch(1)
+            // Оптика — раз в N кадров, через main + AtomicReference (без CountDownLatch)
+            val oBmp: Bitmap? = if (opticalView != null && opticalView.visibility == View.VISIBLE && frameCounter % OPTICAL_EVERY_N == 0) {
+                val ref = AtomicReference<Bitmap?>(null)
+                val done = Object()
                 mainHandler.post {
                     try {
                         val b = opticalView.bitmap
                         if (b != null) {
                             srcRect.set(0, 0, b.width, b.height)
                             opticalCanvas.drawBitmap(b, srcRect, dstRect, null)
-                            result = opticalBmp
+                            ref.set(opticalBmp)
                         }
                     } catch (_: Exception) {
                     } finally {
-                        latch.countDown()
+                        synchronized(done) { done.notifyAll() }
                     }
                 }
-                try {
-                    latch.await(100, TimeUnit.MILLISECONDS)
-                } catch (_: InterruptedException) {
+                synchronized(done) {
+                    try { done.wait(80) } catch (_: InterruptedException) {}
                 }
-                result
+                ref.get()
             } else null
 
             val (optNormX, optNormY) = ui.getOpticalOffsetNorm()
