@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout 
+<androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/rootLayout"
@@ -7,7 +7,6 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Базовый контейнер видеопотоков -->
     <FrameLayout
         android:id="@+id/cameraContainer"
         android:layout_width="0dp"
@@ -17,7 +16,6 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
-        <!-- 1. Слот оптики -->
         <FrameLayout
             android:id="@+id/opticalContainer"
             android:layout_width="match_parent"
@@ -31,7 +29,6 @@
                 app:implementationMode="compatible" />
         </FrameLayout>
 
-        <!-- 2. Слот тепловизора -->
         <FrameLayout
             android:id="@+id/thermalContainer"
             android:layout_width="match_parent"
@@ -46,7 +43,6 @@
         </FrameLayout>
     </FrameLayout>
 
-    <!-- Слой прицела, трекера и шкалы прозрачности -->
     <com.example.thermalcapture.CrosshairView
         android:id="@+id/crosshairOverlay"
         android:layout_width="match_parent"
@@ -56,7 +52,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- ВЕРХНЯЯ ЛЕВАЯ ПАНЕЛЬ: Кнопка "Во весь экран" и статус -->
+    <!-- ВЕРХНЯЯ ЛЕВАЯ ПАНЕЛЬ -->
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -102,7 +98,7 @@
             android:textStyle="bold" />
     </LinearLayout>
 
-    <!-- ВЕРХНЯЯ ПРАВАЯ ПАНЕЛЬ: Кнопка-Шестеренка (⚙) настроек -->
+    <!-- ВЕРХНЯЯ ПРАВАЯ ПАНЕЛЬ: Шестеренка -->
     <Button
         android:id="@+id/btnSettings"
         android:layout_width="40dp"
@@ -118,7 +114,7 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- ЛЕВЫЙ ВЫДВИЖНОЙ БАР (Автоскрытие через 7 сек) -->
+    <!-- ЛЕВЫЙ ВЫДВИЖНОЙ БАР (без кнопки записи) -->
     <LinearLayout
         android:id="@+id/leftSidebar"
         android:layout_width="wrap_content"
@@ -170,18 +166,8 @@
                 android:id="@+id/btnPhoto"
                 android:layout_width="100dp"
                 android:layout_height="36dp"
-                android:layout_marginBottom="4dp"
                 android:backgroundTint="#0077CC"
                 android:text="ФОТО 📷"
-                android:textColor="#FFFFFF"
-                android:textSize="10sp" />
-
-            <Button
-                android:id="@+id/btnRecord"
-                android:layout_width="100dp"
-                android:layout_height="36dp"
-                android:backgroundTint="#B71C1C"
-                android:text="ЗАПИСЬ ⏺"
                 android:textColor="#FFFFFF"
                 android:textSize="10sp" />
         </LinearLayout>
@@ -200,7 +186,40 @@
             android:textSize="12sp" />
     </LinearLayout>
 
-    <!-- НИЖНЯЯ ПАНЕЛЬ: Только ЗУМ, ПАЛИТРА и ГИБРИД -->
+    <!-- НОВАЯ: КНОПКА ПОВОРОТА ТЕПЛОВИЗОРА (слева снизу) -->
+    <Button
+        android:id="@+id/btnThermalRotate"
+        android:layout_width="42dp"
+        android:layout_height="42dp"
+        android:layout_margin="10dp"
+        android:backgroundTint="#80000000"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
+        android:padding="0dp"
+        android:text="⟳"
+        android:textColor="#00FF00"
+        android:textSize="20sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- НОВАЯ: КНОПКА ЗАПИСИ ВНИЗУ ПО ЦЕНТРУ -->
+    <Button
+        android:id="@+id/btnRecordCenter"
+        android:layout_width="66dp"
+        android:layout_height="66dp"
+        android:layout_marginBottom="10dp"
+        android:backgroundTint="#B71C1C"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
+        android:padding="0dp"
+        android:text="⏺"
+        android:textColor="#FFFFFF"
+        android:textSize="26sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- НИЖНЯЯ ПРАВАЯ ПАНЕЛЬ -->
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
