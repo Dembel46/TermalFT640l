@@ -245,7 +245,19 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintVertical_bias="0.42" />
-
+<View
+    android:id="@+id/flashOverlay"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/flash_vignette"
+    android:visibility="gone"
+    android:clickable="false"
+    android:focusable="false"
+    app:layout_constraintBottom_toBottomOf="parent"
+    app:layout_constraintEnd_toEndOf="parent"
+    app:layout_constraintStart_toStartOf="parent"
+    app:layout_constraintTop_toTopOf="parent" />
+    
     <!-- Кнопка фото: справа, ниже записи -->
     <com.example.thermalcapture.PhotoButtonView
         android:id="@+id/btnPhotoFloat"
