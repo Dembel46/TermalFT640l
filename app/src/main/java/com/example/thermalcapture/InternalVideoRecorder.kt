@@ -3,6 +3,7 @@ package com.example.thermalcapture
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
@@ -20,9 +21,7 @@ class InternalVideoRecorder(
     private val width: Int = 1280,
     private val height: Int = 720,
     private val frameRate: Int = 20,
-    private val bitRate: Int = 4_000_000,
-    // Поворот ТОЛЬКО слоя оптики. Тепловизор и трекер не трогаем.
-    private val opticalRotationDegrees: Int = 90
+    private val bitRate: Int = 4_000_000
 ) {
 
     private var mediaCodec: MediaCodec? = null
@@ -63,6 +62,10 @@ class InternalVideoRecorder(
     private val argbPixels = IntArray(width * height)
     private val yuvBuffer = ByteArray(width * height * 3 / 2)
 
+    // Кэш повёрнутых битмапов, чтобы не аллоцировать каждый кадр
+    private var opticalRotatedCache: Bitmap? = null
+    private var thermalRotatedCache: Bitmap? = null
+
     private var startPtsUs = -1L
     private var lastPtsUs = 0L
 
@@ -76,8 +79,6 @@ class InternalVideoRecorder(
                 setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-                // KEY_ROTATION НЕ ставим — плеер не должен крутить весь кадр,
-                // тепловизор уже в правильной ориентации.
             }
 
             val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -116,7 +117,9 @@ class InternalVideoRecorder(
         hybridAlpha: Float,
         opticalOffsetNormX: Float,
         opticalOffsetNormY: Float,
-        targets: List<DetectedTarget>
+        targets: List<DetectedTarget>,
+        opticalRotationDegrees: Int,
+        thermalRotationDegrees: Int
     ) {
         if (!isRecording || isBusyEncoding) return
         isBusyEncoding = true
@@ -124,7 +127,8 @@ class InternalVideoRecorder(
             try {
                 processCompositeFrame(
                     thermalBmp, opticalBmp, displayMode, isHybrid, hybridAlpha,
-                    opticalOffsetNormX, opticalOffsetNormY, targets
+                    opticalOffsetNormX, opticalOffsetNormY, targets,
+                    opticalRotationDegrees, thermalRotationDegrees
                 )
                 drainCodec(false)
             } catch (_: Throwable) {
@@ -135,16 +139,23 @@ class InternalVideoRecorder(
     }
 
     private fun processCompositeFrame(
-        thermalBmp: Bitmap?,
-        opticalBmp: Bitmap?,
+        thermalBmpRaw: Bitmap?,
+        opticalBmpRaw: Bitmap?,
         displayMode: Int,
         isHybrid: Boolean,
         hybridAlpha: Float,
         opticalOffsetNormX: Float,
         opticalOffsetNormY: Float,
-        targets: List<DetectedTarget>
+        targets: List<DetectedTarget>,
+        opticalRotationDegrees: Int,
+        thermalRotationDegrees: Int
     ) {
         val codec = mediaCodec ?: return
+
+        // Применяем поворот к исходным битмапам ДО композита.
+        val thermalBmp = thermalBmpRaw?.let { rotateBitmapCached(it, thermalRotationDegrees, true) }
+        val opticalBmp = opticalBmpRaw?.let { rotateBitmapCached(it, opticalRotationDegrees, false) }
+
         compositeCanvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), clearPaint)
 
         val thermalArea = RectF()
@@ -153,8 +164,8 @@ class InternalVideoRecorder(
         when {
             isHybrid -> {
                 opticalBmp?.let {
-                    // Гибрид: оптика на весь экран, с поворотом
-                    drawOpticalRotated(it, RectF(0f, 0f, width.toFloat(), height.toFloat()))
+                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
+                        Rect(0, 0, width, height), bitmapPaint)
                     opticalArea.set(0f, 0f, width.toFloat(), height.toFloat())
                 }
                 thermalBmp?.let {
@@ -171,20 +182,18 @@ class InternalVideoRecorder(
             }
             displayMode == 0 -> {
                 val splitX = (width * 0.7f).toInt()
-                // Тепло — без поворота
                 thermalBmp?.let {
                     compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
                         Rect(0, 0, splitX, height), bitmapPaint)
                     thermalArea.set(0f, 0f, splitX.toFloat(), height.toFloat())
                 }
-                // Оптика — с поворотом
                 opticalBmp?.let {
-                    drawOpticalRotated(it, RectF(splitX.toFloat(), 0f, width.toFloat(), height.toFloat()))
+                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
+                        Rect(splitX, 0, width, height), bitmapPaint)
                     opticalArea.set(splitX.toFloat(), 0f, width.toFloat(), height.toFloat())
                 }
             }
             displayMode == 1 -> {
-                // ТЕПЛО 100%
                 thermalBmp?.let {
                     compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
                         Rect(0, 0, width, height), bitmapPaint)
@@ -192,15 +201,14 @@ class InternalVideoRecorder(
                 }
             }
             displayMode == 2 -> {
-                // ОПТИКА 100% — с поворотом
                 opticalBmp?.let {
-                    drawOpticalRotated(it, RectF(0f, 0f, width.toFloat(), height.toFloat()))
+                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
+                        Rect(0, 0, width, height), bitmapPaint)
                     opticalArea.set(0f, 0f, width.toFloat(), height.toFloat())
                 }
             }
         }
 
-        // Рамки трекера — на тепловизоре (без поворота)
         if (thermalArea.width() > 0 && targets.isNotEmpty()) {
             for (t in targets) {
                 targetBoxPaint.color = when (t.type) {
@@ -226,12 +234,9 @@ class InternalVideoRecorder(
             }
         }
 
-        // Прицел тепловизора — по центру его области, без поворота
         if (thermalArea.width() > 0) {
             drawReticleMarks(compositeCanvas, thermalArea.centerX(), thermalArea.centerY(), 38f)
         }
-
-        // Прицел оптики — учитывает opticalOffsetNormX/Y (тоже в «повёрнутых» координатах)
         if (opticalArea.width() > 0 && !isHybrid) {
             val cx = opticalArea.centerX() + opticalOffsetNormX * opticalArea.width()
             val cy = opticalArea.centerY() + opticalOffsetNormY * opticalArea.height()
@@ -259,31 +264,33 @@ class InternalVideoRecorder(
     }
 
     /**
-     * Рисует оптический кадр с поворотом вокруг центра targetRect.
-     * При повороте на 90° фактический прямоугольник, в который рисуем,
-     * меняет ширину и высоту местами — иначе картинка не впишется.
+     * Поворачивает Bitmap на заданный угол. Если угол 0 — возвращает исходник.
+     * Кэширует результат, чтобы не аллоцировать каждый кадр при неизменном размере.
      */
-    private fun drawOpticalRotated(src: Bitmap, targetRect: RectF) {
-        if (opticalRotationDegrees == 0) {
-            compositeCanvas.drawBitmap(src, Rect(0, 0, src.width, src.height), targetRect, bitmapPaint)
-            return
-        }
-        val save = compositeCanvas.save()
-        val cx = targetRect.centerX()
-        val cy = targetRect.centerY()
-        compositeCanvas.rotate(opticalRotationDegrees.toFloat(), cx, cy)
+    private fun rotateBitmapCached(src: Bitmap, degrees: Int, isThermal: Boolean): Bitmap {
+        val norm = ((degrees % 360) + 360) % 360
+        if (norm == 0) return src
 
-        // Для 90/270 ширина и высота меняются местами
-        val adjusted: RectF = if (opticalRotationDegrees == 90 || opticalRotationDegrees == 270 ||
-            opticalRotationDegrees == -90 || opticalRotationDegrees == -270) {
-            val w = targetRect.width()
-            val h = targetRect.height()
-            RectF(cx - h / 2f, cy - w / 2f, cx + h / 2f, cy + w / 2f)
-        } else {
-            RectF(targetRect)
+        val cache = if (isThermal) thermalRotatedCache else opticalRotatedCache
+        val matrix = Matrix()
+        matrix.postRotate(norm.toFloat())
+
+        // Для 90/270 меняем размеры
+        val targetW = if (norm == 90 || norm == 270) src.height else src.width
+        val targetH = if (norm == 90 || norm == 270) src.width else src.height
+
+        if (cache != null && cache.width == targetW && cache.height == targetH) {
+            val canvas = Canvas(cache)
+            canvas.drawBitmap(src, matrix, null)
+            return cache
         }
-        compositeCanvas.drawBitmap(src, Rect(0, 0, src.width, src.height), adjusted, bitmapPaint)
-        compositeCanvas.restoreToCount(save)
+
+        val newBmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(newBmp)
+        canvas.drawBitmap(src, matrix, null)
+
+        if (isThermal) thermalRotatedCache = newBmp else opticalRotatedCache = newBmp
+        return newBmp
     }
 
     private fun drawReticleMarks(canvas: Canvas, cx: Float, cy: Float, size: Float) {
