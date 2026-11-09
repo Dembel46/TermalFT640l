@@ -1,6 +1,7 @@
 package com.example.thermalcapture
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.ContentValues
@@ -37,7 +38,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
@@ -100,15 +100,18 @@ class MainActivity : AppCompatActivity() {
     private var isVisionRunning = true
     private var isProcessingFrame = false
 
-    // По умолчанию трекинг выключен при старте
     private var isTrackingEnabled = false
     private var isThermalStreaming = false
 
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
 
-    // Режимы экрана: 0 - 70/30, 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
-    private var displayMode = 0
-    private var isThermalFullscreen = false
+    // Буферы для устранения фризов камеры при записи видео
+    private val recordOpticalBmp = Bitmap.createBitmap(640, 360, Bitmap.Config.ARGB_8888)
+    private val recordThermalBmp = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888)
+
+    // СТАРТ ПО УМОЛЧАНИЮ: ТЕПЛО 100% (Режим 1)
+    private var displayMode = 1
+    private var isThermalFullscreen = true
     private var isHybridModeActive = false
     private var isSidebarExpanded = true
 
@@ -116,7 +119,6 @@ class MainActivity : AppCompatActivity() {
     private var thermalAspectW = 4
     private var thermalAspectH = 3
 
-    // Автоскрытие сайдбара через 7 секунд
     private val sidebarHandler = Handler(Looper.getMainLooper())
     private val hideSidebarRunnable = Runnable { collapseSidebar() }
 
@@ -130,16 +132,29 @@ class MainActivity : AppCompatActivity() {
     private val recordFrameLoopRunnable = object : Runnable {
         override fun run() {
             if (isRecording) {
-                val tBmp = if (isThermalStreaming && cameraView.isAvailable) cameraView.bitmap else null
-                val oBmp = if (phoneCameraView.visibility == View.VISIBLE) phoneCameraView.bitmap else null
+                // Аппаратное копирование в готовые буферы (0 байт мусора в памяти, 0 фризов)
+                val tBmp = if (isThermalStreaming && cameraView.isAvailable) {
+                    cameraView.getBitmap(recordThermalBmp)
+                } else null
+
+                val oBmp = if (phoneCameraView.visibility == View.VISIBLE) {
+                    (phoneCameraView.getChildAt(0) as? TextureView)?.getBitmap(recordOpticalBmp)
+                } else null
+
+                val optNormX = if (phoneCameraView.width > 0) crosshairOverlay.opticalOffsetX / phoneCameraView.width else 0f
+                val optNormY = if (phoneCameraView.height > 0) crosshairOverlay.opticalOffsetY / phoneCameraView.height else 0f
 
                 videoRecorder.queueFrame(
                     thermalBmp = tBmp,
                     opticalBmp = oBmp,
                     displayMode = displayMode,
                     isHybrid = isHybridModeActive,
-                    hybridAlpha = crosshairOverlay.hybridAlpha
+                    hybridAlpha = crosshairOverlay.hybridAlpha,
+                    opticalOffsetNormX = optNormX,
+                    opticalOffsetNormY = optNormY,
+                    targets = crosshairOverlay.detectedTargets
                 )
+
                 mainHandler.postDelayed(this, 40)
             }
         }
@@ -220,7 +235,6 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
-        // Загрузка сохраненных координат юстировки
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
@@ -247,8 +261,10 @@ class MainActivity : AppCompatActivity() {
 
         updateRecordUiState()
 
+        // СТАРТ ПРИЛОЖЕНИЯ: СТРОГО ТЕПЛО 100%
         rootLayout.post {
-            setSplitRatio(0.7f, 0.3f, "70/30")
+            setSplitRatio(1.0f, 0.0f, "ТЕПЛО 100%")
+            btnThermalFullscreen.text = "⤡"
             resetSidebarTimer()
         }
     }
@@ -532,7 +548,7 @@ class MainActivity : AppCompatActivity() {
                 btnHybrid.text = "ГИБРИД"
                 btnHybrid.setBackgroundColor(0xFF444444.toInt())
                 cameraView.alpha = 1.0f
-                setSplitRatio(0.7f, 0.3f, "70/30")
+                setSplitRatio(1.0f, 0.0f, "ТЕПЛО 100%")
             }
         }
 
@@ -685,7 +701,7 @@ class MainActivity : AppCompatActivity() {
             • РЕЖИМ — переключение: 70/30 (тепло + оптика), 100% Тепловизор, 100% Оптика.
             • ЮСТИРОВКА — калибровка параллакса двух камер. Перемещайте красный прицел пальцем, нажмите "СОХРАНИТЬ".
             • ТРЕК — вкл/выкл компьютерного зрения. Цели >9x9 берутся в контур силуэта, ≤9x9 — в квадрат. Движущиеся цели подсвечиваются КРАСНЫМ на 3 секунды.
-            • ФОТО 📷 — снимок экрана в текущем режиме отображения.
+            • ФОТО 📷 — снимок экрана в текущем режиме отображения с сохранением прицела.
             • ЗАПИСЬ ⏺ — внутренний видеорегистратор (без запросов системы). Клик: старт/стоп. Зажатие: выбор циклического (по 3 мин) или непрерывного режима.
 
             2. ОПЕРАТИВНАЯ НИЖНЯЯ ПАНЕЛЬ:
@@ -786,6 +802,7 @@ class MainActivity : AppCompatActivity() {
 
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         try {
+            // PixelCopy копирует окно целиком вместе со слоем прицела и рамок
             PixelCopy.request(window, bmp, { result ->
                 if (result == PixelCopy.SUCCESS) {
                     savePhotoOutput(bmp)
