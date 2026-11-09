@@ -62,18 +62,34 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Триггер АВТО / РУЧНОЙ КОНТРАСТ (справа сверху) -->
-    <Button
-        android:id="@+id/btnAgc"
+    <!-- Верхняя правая панель: выбор UART адаптера и АВТО/РУЧНОЙ контраст -->
+    <LinearLayout
         android:layout_width="wrap_content"
-        android:layout_height="38dp"
+        android:layout_height="wrap_content"
         android:layout_margin="10dp"
-        android:backgroundTint="#008800"
-        android:text="АВТО КОНТРАСТ"
-        android:textColor="#FFFFFF"
-        android:textSize="11sp"
+        android:orientation="horizontal"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        app:layout_constraintTop_toTopOf="parent">
+
+        <Button
+            android:id="@+id/btnUartSelect"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:layout_marginEnd="6dp"
+            android:backgroundTint="#444444"
+            android:text="UART: ВЫБОР"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp" />
+
+        <Button
+            android:id="@+id/btnAgc"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:backgroundTint="#008800"
+            android:text="АВТО КОНТРАСТ"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp" />
+    </LinearLayout>
 
     <!-- Слой прицела, трекера, шкалы прозрачности и нониуса зума -->
     <com.example.thermalcapture.CrosshairView
@@ -100,7 +116,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Нижняя тактическая панель управления -->
+    <!-- Нижняя панель управления -->
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
