@@ -20,7 +20,7 @@ import java.io.File
 class InternalVideoRecorder(
     private val width: Int = 1280,
     private val height: Int = 720,
-    private val frameRate: Int = 20,
+    private val frameRate: Int = 15,
     private val bitRate: Int = 4_000_000
 ) {
 
@@ -62,9 +62,11 @@ class InternalVideoRecorder(
     private val argbPixels = IntArray(width * height)
     private val yuvBuffer = ByteArray(width * height * 3 / 2)
 
-    // Кэши повёрнутых битмапов
     private var opticalRotatedCache: Bitmap? = null
     private var thermalRotatedCache: Bitmap? = null
+
+    private val tmpSrcRect = Rect()
+    private val tmpDstRectF = RectF()
 
     private var startPtsUs = -1L
     private var lastPtsUs = 0L
@@ -154,7 +156,6 @@ class InternalVideoRecorder(
     ) {
         val codec = mediaCodec ?: return
 
-        // Поворачиваем исходные битмапы ДО композита
         val thermalBmp = thermalBmpRaw?.let { rotateBitmapCached(it, thermalRotationDegrees, true) }
         val opticalBmp = opticalBmpRaw?.let { rotateBitmapCached(it, opticalRotationDegrees, false) }
 
@@ -166,47 +167,47 @@ class InternalVideoRecorder(
         when {
             isHybrid -> {
                 opticalBmp?.let {
-                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
-                        Rect(0, 0, width, height), bitmapPaint)
-                    opticalArea.set(0f, 0f, width.toFloat(), height.toFloat())
+                    val area = RectF(0f, 0f, width.toFloat(), height.toFloat())
+                    drawBitmapFit(it, area, bitmapPaint)
+                    opticalArea.set(area)
                 }
                 thermalBmp?.let {
                     val tH = (height * 0.9f).toInt()
                     val tW = (tH * 4f / 3f).toInt().coerceAtMost(width)
                     val left = (width - tW) / 2f
                     val top = (height - tH) / 2f
+                    val area = RectF(left, top, left + tW, top + tH)
                     hybridPaint.alpha = (hybridAlpha * 255).toInt().coerceIn(0, 255)
-                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
-                        Rect(left.toInt(), top.toInt(), (left + tW).toInt(), (top + tH).toInt()),
-                        hybridPaint)
-                    thermalArea.set(left, top, left + tW, top + tH)
+                    drawBitmapFit(it, area, hybridPaint)
+                    thermalArea.set(area)
                 }
             }
             displayMode == 0 -> {
+                // 70 / 30: тепло слева (fit), оптика справа (crop по центру)
                 val splitX = (width * 0.7f).toInt()
                 thermalBmp?.let {
-                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
-                        Rect(0, 0, splitX, height), bitmapPaint)
-                    thermalArea.set(0f, 0f, splitX.toFloat(), height.toFloat())
+                    val area = RectF(0f, 0f, splitX.toFloat(), height.toFloat())
+                    drawBitmapFit(it, area, bitmapPaint)
+                    thermalArea.set(area)
                 }
                 opticalBmp?.let {
-                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
-                        Rect(splitX, 0, width, height), bitmapPaint)
-                    opticalArea.set(splitX.toFloat(), 0f, width.toFloat(), height.toFloat())
+                    val area = RectF(splitX.toFloat(), 0f, width.toFloat(), height.toFloat())
+                    drawBitmapCrop(it, area, bitmapPaint)
+                    opticalArea.set(area)
                 }
             }
             displayMode == 1 -> {
                 thermalBmp?.let {
-                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
-                        Rect(0, 0, width, height), bitmapPaint)
-                    thermalArea.set(0f, 0f, width.toFloat(), height.toFloat())
+                    val area = RectF(0f, 0f, width.toFloat(), height.toFloat())
+                    drawBitmapFit(it, area, bitmapPaint)
+                    thermalArea.set(area)
                 }
             }
             displayMode == 2 -> {
                 opticalBmp?.let {
-                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
-                        Rect(0, 0, width, height), bitmapPaint)
-                    opticalArea.set(0f, 0f, width.toFloat(), height.toFloat())
+                    val area = RectF(0f, 0f, width.toFloat(), height.toFloat())
+                    drawBitmapFit(it, area, bitmapPaint)
+                    opticalArea.set(area)
                 }
             }
         }
@@ -265,13 +266,68 @@ class InternalVideoRecorder(
         }
     }
 
+    /** Вписывает bitmap в area с сохранением пропорций (чёрные полосы по краям). */
+    private fun drawBitmapFit(src: Bitmap, area: RectF, paint: Paint) {
+        if (area.width() <= 0f || area.height() <= 0f) return
+        val srcW = src.width.toFloat()
+        val srcH = src.height.toFloat()
+        if (srcW <= 0f || srcH <= 0f) return
+
+        val areaRatio = area.width() / area.height()
+        val srcRatio = srcW / srcH
+
+        val fitW: Float
+        val fitH: Float
+        if (srcRatio > areaRatio) {
+            fitW = area.width()
+            fitH = fitW / srcRatio
+        } else {
+            fitH = area.height()
+            fitW = fitH * srcRatio
+        }
+        val left = area.left + (area.width() - fitW) / 2f
+        val top = area.top + (area.height() - fitH) / 2f
+        tmpDstRectF.set(left, top, left + fitW, top + fitH)
+
+        tmpSrcRect.set(0, 0, src.width, src.height)
+        compositeCanvas.drawBitmap(src, tmpSrcRect, tmpDstRectF, paint)
+    }
+
     /**
-     * Поворачивает Bitmap на заданный угол.
-     * Кэширует результат, чтобы не аллоцировать каждый кадр.
-     * ВАЖНО: очищаем кэш перед рисованием (иначе при 90°/270° в углах
-     * останутся старые пиксели), и сдвигаем картинку в (0,0) после поворота
-     * (иначе при 90°/180°/270° она уходит за границы кэша — чёрный кадр).
+     * Заполняет area с сохранением пропорций, обрезая края (crop по центру).
+     * Используется для оптики в 70/30 — чтобы узкая полоса была заполнена без деформации.
      */
+    private fun drawBitmapCrop(src: Bitmap, area: RectF, paint: Paint) {
+        if (area.width() <= 0f || area.height() <= 0f) return
+        val srcW = src.width.toFloat()
+        val srcH = src.height.toFloat()
+        if (srcW <= 0f || srcH <= 0f) return
+
+        val areaRatio = area.width() / area.height()
+        val srcRatio = srcW / srcH
+
+        val fitW: Float
+        val fitH: Float
+        if (srcRatio > areaRatio) {
+            // src шире area — заполняем по высоте, обрезаем по бокам
+            fitH = area.height()
+            fitW = fitH * srcRatio
+        } else {
+            // src уже area — заполняем по ширине, обрезаем сверху/снизу
+            fitW = area.width()
+            fitH = fitW / srcRatio
+        }
+        val left = area.left - (fitW - area.width()) / 2f
+        val top = area.top - (fitH - area.height()) / 2f
+        tmpDstRectF.set(left, top, left + fitW, top + fitH)
+
+        tmpSrcRect.set(0, 0, src.width, src.height)
+        val save = compositeCanvas.save()
+        compositeCanvas.clipRect(area)
+        compositeCanvas.drawBitmap(src, tmpSrcRect, tmpDstRectF, paint)
+        compositeCanvas.restoreToCount(save)
+    }
+
     private fun rotateBitmapCached(src: Bitmap, degrees: Int, isThermal: Boolean): Bitmap {
         val norm = ((degrees % 360) + 360) % 360
         if (norm == 0) return src
