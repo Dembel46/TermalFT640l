@@ -178,9 +178,6 @@ class CrosshairView @JvmOverloads constructor(
             val leftPx = (centerBmpX - negSize / 2).coerceIn(0, maxLeft)
             val topPx = (centerBmpY - negSize / 2).coerceIn(0, maxTop)
 
-            fullBitmap.getPixels(opticalRawPixels, 0, negSize, leftPx, topPx, negSize, negSize)
-            fullBitmap.recycle()
-
             for (i in 0 until totalNegPixels) {
                 val p = opticalRawPixels[i]
                 val r = (p shr 16) and 0xFF
@@ -210,7 +207,6 @@ class CrosshairView @JvmOverloads constructor(
 
             isOpticalReady = true
         } catch (e: Exception) {
-            fullBitmap.recycle()
         }
     }
 
