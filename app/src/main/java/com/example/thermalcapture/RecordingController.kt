@@ -30,15 +30,13 @@ class RecordingController(
         fun getHybridAlpha(): Float
         fun getOpticalOffsetNorm(): Pair<Float, Float>
         fun getDetectedTargets(): List<DetectedTarget>
-        fun getOpticalRotationDegrees(): Int
         fun onRecordingStateChanged(recording: Boolean)
         fun onRecordingTick(durationSec: Int)
         fun onRecordingError(message: String)
     }
 
     companion object {
-        private const val FRAME_INTERVAL_MS = 50L   // 20 FPS запись
-        private const val OPTICAL_EVERY_N = 2       // оптика раз в 2 кадра = 10 FPS
+        private const val FRAME_INTERVAL_MS = 50L   // 20 FPS
         private const val LOOP_SEGMENT_SEC = 180
     }
 
@@ -52,12 +50,14 @@ class RecordingController(
     private val srcRect = Rect()
     private val dstRect = Rect(0, 0, opticalBmp.width, opticalBmp.height)
 
+    // Кэш последнего успешного кадра оптики — чтобы не промаргивало
+    private var lastOpticalFrame: Bitmap? = null
+
     @Volatile private var isRecording = false
     private var durationSec = 0
     private var isLoopMode = true
     private var currentFile: File? = null
     private var nextTickMs = 0L
-    private var frameCounter = 0
 
     var isLoopRecording: Boolean
         get() = isLoopMode
@@ -73,8 +73,8 @@ class RecordingController(
         }
         isRecording = true
         durationSec = 0
-        frameCounter = 0
         nextTickMs = SystemClock.uptimeMillis() + 1000L
+        lastOpticalFrame = null
         ui.onRecordingStateChanged(true)
 
         captureThread = HandlerThread("RecordCaptureThread").apply { start() }
@@ -89,6 +89,7 @@ class RecordingController(
         captureThread?.quitSafely()
         captureThread = null
         captureHandler = null
+        lastOpticalFrame = null
 
         val fileToExport = currentFile
         ui.onRecordingStateChanged(false)
@@ -126,8 +127,6 @@ class RecordingController(
                 mainHandler.post { ui.onRecordingTick(durationSec) }
             }
 
-            frameCounter++
-
             val thermalView = ui.thermalView
             val opticalView = ui.opticalView
 
@@ -138,8 +137,9 @@ class RecordingController(
                 } catch (_: Exception) { null }
             } else null
 
-            // Оптика — раз в N кадров, через main + AtomicReference (без CountDownLatch)
-            val oBmp: Bitmap? = if (opticalView != null && opticalView.visibility == View.VISIBLE && frameCounter % OPTICAL_EVERY_N == 0) {
+            // Оптика: берём каждый кадр, но с fallback на последний успешный
+            var freshOptical: Bitmap? = null
+            if (opticalView != null && opticalView.visibility == View.VISIBLE) {
                 val ref = AtomicReference<Bitmap?>(null)
                 val done = Object()
                 mainHandler.post {
@@ -158,8 +158,11 @@ class RecordingController(
                 synchronized(done) {
                     try { done.wait(80) } catch (_: InterruptedException) {}
                 }
-                ref.get()
-            } else null
+                freshOptical = ref.get()
+                if (freshOptical != null) lastOpticalFrame = freshOptical
+            }
+
+            val oBmp: Bitmap? = freshOptical ?: lastOpticalFrame
 
             val (optNormX, optNormY) = ui.getOpticalOffsetNorm()
 
@@ -171,8 +174,7 @@ class RecordingController(
                 hybridAlpha = ui.getHybridAlpha(),
                 opticalOffsetNormX = optNormX,
                 opticalOffsetNormY = optNormY,
-                targets = ui.getDetectedTargets(),
-                opticalRotationDegrees = ui.getOpticalRotationDegrees()
+                targets = ui.getDetectedTargets()
             )
 
             captureHandler?.postDelayed(this, FRAME_INTERVAL_MS)
