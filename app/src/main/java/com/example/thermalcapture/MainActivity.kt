@@ -1,7 +1,6 @@
 package com.example.thermalcapture
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -9,7 +8,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
@@ -71,7 +69,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var tvRecordIndicator: TextView
 
-    // Боковой бар слева
+    // Левый выдвижной сайдбар
     private lateinit var leftSidebar: LinearLayout
     private lateinit var sidebarContent: LinearLayout
     private lateinit var btnToggleSidebar: Button
@@ -102,7 +100,7 @@ class MainActivity : AppCompatActivity() {
     private var isVisionRunning = true
     private var isProcessingFrame = false
 
-    // По умолчанию трекинг ВЫКЛЮЧЕН
+    // По умолчанию трекинг ВЫКЛЮЧЕН при старте
     private var isTrackingEnabled = false
     private var isThermalStreaming = false
 
@@ -115,6 +113,8 @@ class MainActivity : AppCompatActivity() {
     private var isSidebarExpanded = true
 
     private var currentZoomIndex = 0
+    private var thermalAspectW = 4
+    private var thermalAspectH = 3
 
     // ВИДЕОРЕГИСТРАТОР
     private var isRecording = false
@@ -135,7 +135,6 @@ class MainActivity : AppCompatActivity() {
                 val modeLabel = if (isLoopRecordMode) "ЦИКЛ 3М" else "НЕПРЕРЫВ"
                 tvRecordIndicator.text = String.format(Locale.US, "● REC [%s] %02d:%02d", modeLabel, min, sec)
 
-                // В циклическом режиме нарезка по 3 минуты (180 сек)
                 if (isLoopRecordMode && recordDurationSec >= 180) {
                     restartRecordSegment()
                 }
@@ -153,7 +152,7 @@ class MainActivity : AppCompatActivity() {
             mediaProjection = projectionManager.getMediaProjection(result.resultCode, result.data!!)
             startMediaRecorderInternal()
         } else {
-            Toast.makeText(this, "Запись экрана отклонена пользователем", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Запись экрана отклонена", Toast.LENGTH_SHORT).show()
             isRecording = false
             updateRecordUiState()
         }
@@ -216,7 +215,6 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
-        // Загрузка координат юстировки
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
@@ -255,6 +253,10 @@ class MainActivity : AppCompatActivity() {
             if (iface.interfaceClass == UsbConstants.USB_CLASS_VIDEO) return true
         }
         return false
+    }
+
+    private fun isSerialDevice(device: UsbDevice): Boolean {
+        return UsbSerialProber.getDefaultProber().probeDevice(device) != null
     }
 
     private fun initVisionPipeline() {
@@ -395,7 +397,7 @@ class MainActivity : AppCompatActivity() {
         val containerH = thermalContainer.height
         if (containerW <= 0 || containerH <= 0) return
 
-        val targetRatio = 4f / 3f
+        val targetRatio = thermalAspectW.toFloat() / thermalAspectH.toFloat()
         val fitW: Int
         val fitH: Int
 
@@ -409,7 +411,7 @@ class MainActivity : AppCompatActivity() {
                 fitW = (containerH * targetRatio).toInt().coerceAtMost(containerW)
             } else {
                 fitW = containerW
-                fitH = ((fitW * 3f) / 4f).toInt().coerceAtMost(containerH)
+                fitH = ((fitW * (1f / targetRatio))).toInt().coerceAtMost(containerH)
             }
         }
 
@@ -463,24 +465,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
-        // Выдвижение / скрытие левого сайдбара
         btnToggleSidebar.setOnClickListener {
             isSidebarExpanded = !isSidebarExpanded
             sidebarContent.visibility = if (isSidebarExpanded) View.VISIBLE else View.GONE
             btnToggleSidebar.text = if (isSidebarExpanded) "◀" else "▶"
         }
 
-        // Меню настроек (Шестеренка ⚙)
         btnSettings.setOnClickListener {
             showSettingsDialog()
         }
 
-        // Кнопка ФОТО (Снимок экрана в текущем режиме отображения)
         btnPhoto.setOnClickListener {
             takeScreenshotPhoto()
         }
 
-        // Кнопка ЗАПИСЬ ВИДЕО (Клик - старт/стоп, Долгий клик - выбор режима)
         btnRecord.setOnClickListener {
             toggleVideoRecording()
         }
@@ -489,7 +487,6 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
-        // Кнопка повторного опроса USB
         btnRescanUsb.setOnClickListener {
             rescanUsbDevices()
         }
@@ -586,7 +583,6 @@ class MainActivity : AppCompatActivity() {
             crosshairOverlay.invalidate()
         }
 
-        // КНОПКА ЗУМА: короткое переключение 0x -> 1x -> 2x -> 3x
         btnZoom.setOnClickListener {
             currentZoomIndex = (currentZoomIndex + 1) % 4
             val zoomFactor = when (currentZoomIndex) {
@@ -606,9 +602,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Меню настроек (Шестеренка ⚙)
-     */
     private fun showSettingsDialog() {
         val soundState = if (alertManager.isSoundEnabled) "ВКЛ" else "ВЫКЛ"
         val flashState = if (alertManager.isFlashEnabled) "ВКЛ" else "ВЫКЛ"
@@ -645,9 +638,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Повторный опрос и переподключение USB устройств
-     */
     private fun rescanUsbDevices() {
         Toast.makeText(this, "Повторный опрос USB устройств...", Toast.LENGTH_SHORT).show()
         try {
@@ -658,9 +648,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Фотоснимок экрана (WYSIWYG: ровно то, что видит оператор)
-     */
     private fun takeScreenshotPhoto() {
         val w = rootLayout.width
         val h = rootLayout.height
@@ -698,9 +685,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Запуск/Остановка записи экрана
-     */
     private fun toggleVideoRecording() {
         if (!isRecording) {
             val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -753,7 +737,6 @@ class MainActivity : AppCompatActivity() {
             updateRecordUiState()
             recordTimerHandler.post(recordTimerRunnable)
 
-            // Контроль объема памяти авторегистратора
             enforceStorageLimit(dir)
         } catch (e: Exception) {
             stopVideoRecording()
@@ -813,9 +796,6 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Запись сохранена", Toast.LENGTH_SHORT).show()
     }
 
-    /**
-     * Автоочистка старых роликов (видеорегистратор: лимит 20 файлов)
-     */
     private fun enforceStorageLimit(dir: File) {
         val files = dir.listFiles { f -> f.extension == "mp4" }?.sortedBy { it.lastModified() }
         if (files != null && files.size > 20) {
@@ -829,11 +809,11 @@ class MainActivity : AppCompatActivity() {
     private fun updateRecordUiState() {
         if (isRecording) {
             btnRecord.text = "СТОП ⏹"
-            btnRecord.setBackgroundColor(0xFF00C853.toInt()) // Зеленый стоп
+            btnRecord.setBackgroundColor(0xFF00C853.toInt())
             tvRecordIndicator.visibility = View.VISIBLE
         } else {
             btnRecord.text = "ЗАПИСЬ ⏺"
-            btnRecord.setBackgroundColor(0xFFB71C1C.toInt()) // Красный старт
+            btnRecord.setBackgroundColor(0xFFB71C1C.toInt())
             val modeLabel = if (isLoopRecordMode) "ЦИКЛ (3м)" else "НЕПРЕРЫВ"
             tvRecordIndicator.text = "РЕЖИМ: $modeLabel"
             tvRecordIndicator.visibility = View.VISIBLE
@@ -1030,10 +1010,18 @@ class MainActivity : AppCompatActivity() {
             "5 : 4 (640 x 512 FT640L)",
             "16 : 9 (Широкоформатный)"
         )
+        val sizes = arrayOf(
+            Pair(4, 3),
+            Pair(5, 4),
+            Pair(16, 9)
+        )
 
         AlertDialog.Builder(this)
             .setTitle("Пропорции тепловизора:")
             .setItems(resolutions) { _, which ->
+                val chosen = sizes[which]
+                thermalAspectW = chosen.first
+                thermalAspectH = chosen.second
                 rootLayout.post { updateOverlayBounds() }
             }
             .show()
@@ -1106,10 +1094,6 @@ class MainActivity : AppCompatActivity() {
                 }
             })
         }
-    }
-
-    private fun isSerialDevice(device: UsbDevice): Boolean {
-        return UsbSerialProber.getDefaultProber().probeDevice(device) != null
     }
 
     override fun onDestroy() {
