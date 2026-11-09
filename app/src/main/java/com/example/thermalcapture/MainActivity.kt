@@ -1,11 +1,12 @@
 package com.example.thermalcapture
 
 import android.Manifest
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.BroadcastReceiver
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Rect
@@ -36,6 +37,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
@@ -68,7 +70,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var tvRecordIndicator: TextView
 
-    // Левый выдвижной сайдбар
+    // Боковой бар слева
     private lateinit var leftSidebar: LinearLayout
     private lateinit var sidebarContent: LinearLayout
     private lateinit var btnToggleSidebar: Button
@@ -98,12 +100,13 @@ class MainActivity : AppCompatActivity() {
     private var isVisionRunning = true
     private var isProcessingFrame = false
 
+    // По умолчанию трекинг выключен при старте
     private var isTrackingEnabled = false
     private var isThermalStreaming = false
 
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
 
-    // Режимы: 0 - 70/30, 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
+    // Режимы экрана: 0 - 70/30, 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
     private var displayMode = 0
     private var isThermalFullscreen = false
     private var isHybridModeActive = false
@@ -217,6 +220,7 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
+        // Загрузка сохраненных координат юстировки
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
@@ -754,6 +758,27 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun getTargetDirectory(subfolder: String): File {
+        val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
+        val location = prefs.getString("storage_location", "standard")
+
+        val targetDir = if (location == "root") {
+            File(Environment.getExternalStorageDirectory(), "ThermalCapture/$subfolder")
+        } else {
+            val baseType = if (subfolder == "Photos") Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES
+            File(Environment.getExternalStoragePublicDirectory(baseType), "ThermalCapture")
+        }
+
+        if (!targetDir.exists()) {
+            val created = targetDir.mkdirs()
+            if (!created) {
+                val fallbackType = if (subfolder == "Photos") Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES
+                return getExternalFilesDir(fallbackType) ?: filesDir
+            }
+        }
+        return targetDir
+    }
+
     private fun takeScreenshotPhoto() {
         val w = rootLayout.width
         val h = rootLayout.height
@@ -794,7 +819,6 @@ class MainActivity : AppCompatActivity() {
                 bitmap.recycle()
             }
         } else {
-            // Сохранение через MediaStore (100% совместимо с Галереей без ошибок прав)
             try {
                 val values = ContentValues().apply {
                     put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
@@ -867,7 +891,7 @@ class MainActivity : AppCompatActivity() {
         recordTimerHandler.removeCallbacks(recordTimerRunnable)
 
         btnRecord.text = "СОХРАНЕНИЕ..."
-        btnRecord.setBackgroundColor(0xFFFFA000.toInt()) // Желтый цвет сохранения
+        btnRecord.setBackgroundColor(0xFFFFA000.toInt())
 
         val fileToExport = currentRecordFile
         videoRecorder.stop {
@@ -878,9 +902,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Экспорт видеоролика в выбранную папку (MediaStore Галереи или корень устройства)
-     */
     private fun exportFinishedVideo(sourceFile: File) {
         if (!sourceFile.exists() || sourceFile.length() <= 0) return
 
