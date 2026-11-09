@@ -250,7 +250,7 @@ class MainActivity : AppCompatActivity() {
                 override fun getOpticalRotationDegrees(): Int {
                     // Back-камера в landscape: PreviewView.bitmap приходит в сенсорной ориентации.
                     // 90 = повернуть по часовой. Если видео боком — поменяйте на 270/180/0.
-                    return 90
+                    return 180
                 }
 
                 override fun onRecordingStateChanged(recording: Boolean) {
