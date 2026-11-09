@@ -82,7 +82,6 @@ class InternalVideoRecorder(
                 setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
-
             val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec.start()
@@ -168,7 +167,7 @@ class InternalVideoRecorder(
             isHybrid -> {
                 opticalBmp?.let {
                     val area = RectF(0f, 0f, width.toFloat(), height.toFloat())
-                    drawBitmapFit(it, area, bitmapPaint)
+                    drawBitmapCrop(it, area, bitmapPaint)  // <-- crop для оптики
                     opticalArea.set(area)
                 }
                 thermalBmp?.let {
@@ -178,21 +177,20 @@ class InternalVideoRecorder(
                     val top = (height - tH) / 2f
                     val area = RectF(left, top, left + tW, top + tH)
                     hybridPaint.alpha = (hybridAlpha * 255).toInt().coerceIn(0, 255)
-                    drawBitmapFit(it, area, hybridPaint)
+                    drawBitmapFit(it, area, hybridPaint)  // тепловизор — fit
                     thermalArea.set(area)
                 }
             }
             displayMode == 0 -> {
-                // 70 / 30: тепло слева (fit), оптика справа (crop по центру)
                 val splitX = (width * 0.7f).toInt()
                 thermalBmp?.let {
                     val area = RectF(0f, 0f, splitX.toFloat(), height.toFloat())
-                    drawBitmapFit(it, area, bitmapPaint)
+                    drawBitmapFit(it, area, bitmapPaint)  // тепловизор — fit
                     thermalArea.set(area)
                 }
                 opticalBmp?.let {
                     val area = RectF(splitX.toFloat(), 0f, width.toFloat(), height.toFloat())
-                    drawBitmapCrop(it, area, bitmapPaint)
+                    drawBitmapCrop(it, area, bitmapPaint)  // оптика — crop
                     opticalArea.set(area)
                 }
             }
@@ -206,7 +204,7 @@ class InternalVideoRecorder(
             displayMode == 2 -> {
                 opticalBmp?.let {
                     val area = RectF(0f, 0f, width.toFloat(), height.toFloat())
-                    drawBitmapFit(it, area, bitmapPaint)
+                    drawBitmapCrop(it, area, bitmapPaint)  // оптика — crop
                     opticalArea.set(area)
                 }
             }
@@ -266,61 +264,46 @@ class InternalVideoRecorder(
         }
     }
 
-    /** Вписывает bitmap в area с сохранением пропорций (чёрные полосы по краям). */
+    /** Вписывает с сохранением пропорций (чёрные полосы, если нужно). */
     private fun drawBitmapFit(src: Bitmap, area: RectF, paint: Paint) {
         if (area.width() <= 0f || area.height() <= 0f) return
         val srcW = src.width.toFloat()
         val srcH = src.height.toFloat()
         if (srcW <= 0f || srcH <= 0f) return
-
         val areaRatio = area.width() / area.height()
         val srcRatio = srcW / srcH
-
         val fitW: Float
         val fitH: Float
         if (srcRatio > areaRatio) {
-            fitW = area.width()
-            fitH = fitW / srcRatio
+            fitW = area.width(); fitH = fitW / srcRatio
         } else {
-            fitH = area.height()
-            fitW = fitH * srcRatio
+            fitH = area.height(); fitW = fitH * srcRatio
         }
         val left = area.left + (area.width() - fitW) / 2f
         val top = area.top + (area.height() - fitH) / 2f
         tmpDstRectF.set(left, top, left + fitW, top + fitH)
-
         tmpSrcRect.set(0, 0, src.width, src.height)
         compositeCanvas.drawBitmap(src, tmpSrcRect, tmpDstRectF, paint)
     }
 
-    /**
-     * Заполняет area с сохранением пропорций, обрезая края (crop по центру).
-     * Используется для оптики в 70/30 — чтобы узкая полоса была заполнена без деформации.
-     */
+    /** Заполняет область с обрезкой краёв (как PreviewView FILL_CENTER). */
     private fun drawBitmapCrop(src: Bitmap, area: RectF, paint: Paint) {
         if (area.width() <= 0f || area.height() <= 0f) return
         val srcW = src.width.toFloat()
         val srcH = src.height.toFloat()
         if (srcW <= 0f || srcH <= 0f) return
-
         val areaRatio = area.width() / area.height()
         val srcRatio = srcW / srcH
-
         val fitW: Float
         val fitH: Float
         if (srcRatio > areaRatio) {
-            // src шире area — заполняем по высоте, обрезаем по бокам
-            fitH = area.height()
-            fitW = fitH * srcRatio
+            fitH = area.height(); fitW = fitH * srcRatio
         } else {
-            // src уже area — заполняем по ширине, обрезаем сверху/снизу
-            fitW = area.width()
-            fitH = fitW / srcRatio
+            fitW = area.width(); fitH = fitW / srcRatio
         }
         val left = area.left - (fitW - area.width()) / 2f
         val top = area.top - (fitH - area.height()) / 2f
         tmpDstRectF.set(left, top, left + fitW, top + fitH)
-
         tmpSrcRect.set(0, 0, src.width, src.height)
         val save = compositeCanvas.save()
         compositeCanvas.clipRect(area)
@@ -347,7 +330,6 @@ class InternalVideoRecorder(
         }
 
         cache.eraseColor(Color.BLACK)
-
         val canvas = Canvas(cache)
         val matrix = Matrix()
         matrix.postRotate(norm.toFloat())
