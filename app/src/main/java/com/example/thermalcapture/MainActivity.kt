@@ -41,6 +41,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.herohan.uvcapp.CameraHelper
 import com.herohan.uvcapp.ICameraHelper
+import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import kotlin.math.atan2
 
@@ -67,6 +68,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnAgc: Button
     private lateinit var btnZoom: Button
     private lateinit var btnContrastType: Button
+    private lateinit var btnUartSelect: Button
 
     private var cameraHelper: ICameraHelper? = null
     private var thermalSurface: Surface? = null
@@ -108,7 +110,8 @@ class MainActivity : AppCompatActivity() {
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
                         device?.let {
                             if (serialController.connect(this@MainActivity, it)) {
-                                Toast.makeText(this@MainActivity, "UART FT640L подключен (115200)", Toast.LENGTH_SHORT).show()
+                                updateUartUiState(true, serialController.connectedDeviceName)
+                                Toast.makeText(this@MainActivity, "UART подключен: " + serialController.connectedDeviceName, Toast.LENGTH_SHORT).show()
                             }
                         }
                     }
@@ -141,6 +144,7 @@ class MainActivity : AppCompatActivity() {
         btnAgc = findViewById(R.id.btnAgc)
         btnZoom = findViewById(R.id.btnZoom)
         btnContrastType = findViewById(R.id.btnContrastType)
+        btnUartSelect = findViewById(R.id.btnUartSelect)
 
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
@@ -163,7 +167,6 @@ class MainActivity : AppCompatActivity() {
         setupZoomGestures()
         checkPermissionsAndInit()
 
-        // Регистрация приемника разрешений USB Serial
         val filter = IntentFilter(actionUsbPermission)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -171,17 +174,11 @@ class MainActivity : AppCompatActivity() {
             registerReceiver(usbReceiver, filter)
         }
 
-        // Попытка подключить UART если уже вставлен
-        initUsbSerial()
-
         rootLayout.post {
             setSplitRatio(0.7f, 0.3f, "70/30")
         }
     }
 
-    /**
-     * Проверка: является ли USB-устройство видеокамерой UVC
-     */
     private fun isVideoDevice(device: UsbDevice): Boolean {
         if (device.deviceClass == UsbConstants.USB_CLASS_VIDEO) return true
         for (i in 0 until device.interfaceCount) {
@@ -191,41 +188,84 @@ class MainActivity : AppCompatActivity() {
         return false
     }
 
-    /**
-     * Проверка: является ли USB-устройство COM-портом (CH340, CP2102 и т.д.)
-     */
     private fun isSerialDevice(device: UsbDevice): Boolean {
         return UsbSerialProber.getDefaultProber().probeDevice(device) != null
     }
 
-    private fun initUsbSerial(targetDevice: UsbDevice? = null) {
+    private fun updateUartUiState(connected: Boolean, deviceName: String = "") {
+        runOnUiThread {
+            if (connected) {
+                btnUartSelect.text = "UART: " + deviceName
+                btnUartSelect.setBackgroundColor(0xFF008800.toInt())
+            } else {
+                btnUartSelect.text = "UART: ВЫБОР"
+                btnUartSelect.setBackgroundColor(0xFF444444.toInt())
+            }
+        }
+    }
+
+    /**
+     * Диалоговое окно выбора подключенного USB-UART преобразователя
+     */
+    private fun showUartSelectionDialog() {
         val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
         val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
 
-        if (drivers.isEmpty()) return
-
-        val driver = if (targetDevice != null) {
-            drivers.firstOrNull { it.device == targetDevice } ?: drivers[0]
-        } else {
-            drivers[0]
-        }
-        val device = driver.device
-
-        if (usbManager.hasPermission(device)) {
-            if (serialController.connect(this, device)) {
-                Toast.makeText(this, "UART FT640L активен (115200)", Toast.LENGTH_SHORT).show()
-            }
-        } else {
-            try {
-                val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                } else {
-                    PendingIntent.FLAG_UPDATE_CURRENT
+        if (drivers.isEmpty()) {
+            val allUsbDevices = usbManager.deviceList.values.toList()
+            val msg = if (allUsbDevices.isEmpty()) {
+                "USB-устройства не обнаружены. Проверьте OTG-переходник и кабель."
+            } else {
+                val names = allUsbDevices.joinToString("\n") {
+                    String.format("%s (VID:%04X PID:%04X)", it.deviceName, it.vendorId, it.productId)
                 }
-                val permissionIntent = PendingIntent.getBroadcast(this, 0, Intent(actionUsbPermission), flags)
-                usbManager.requestPermission(device, permissionIntent)
-            } catch (e: Exception) {}
+                "COM-порт не распознан. Подключенные USB:\n$names"
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Преобразователь UART")
+                .setMessage(msg)
+                .setPositiveButton("OK", null)
+                .show()
+            return
         }
+
+        val items = Array(drivers.size) { i ->
+            val d = drivers[i].device
+            val friendly = serialController.getFriendlyName(d)
+            val hasPerm = if (usbManager.hasPermission(d)) "[Разрешено]" else "[Нужен доступ]"
+            String.format("%s %s (VID:%04X)", friendly, hasPerm, d.vendorId)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Выберите UART преобразователь:")
+            .setItems(items) { _, which ->
+                val selectedDriver = drivers[which]
+                val device = selectedDriver.device
+
+                if (usbManager.hasPermission(device)) {
+                    if (serialController.connectWithDriver(this, selectedDriver)) {
+                        updateUartUiState(true, serialController.connectedDeviceName)
+                        Toast.makeText(this, "Подключено: " + serialController.connectedDeviceName + " (115200 8N1)", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this, "Не удалось открыть порт", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    requestUsbPermission(device)
+                }
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun requestUsbPermission(device: UsbDevice) {
+        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val permissionIntent = PendingIntent.getBroadcast(this, 0, Intent(actionUsbPermission), flags)
+        usbManager.requestPermission(device, permissionIntent)
     }
 
     private fun initVisionPipeline() {
@@ -248,7 +288,7 @@ class MainActivity : AppCompatActivity() {
                             } else {
                                 isProcessingFrame = false
                             }
-                        } catch (e: Exception) {
+                        } catch (_: Exception) {
                             isProcessingFrame = false
                         }
                     } else {
@@ -290,7 +330,7 @@ class MainActivity : AppCompatActivity() {
                         tvStatus.text = "Поиск целей: АКТИВЕН"
                     }
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
             } finally {
                 isProcessingFrame = false
             }
@@ -420,6 +460,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
+        // Кнопка выбора и подключения UART адаптера
+        btnUartSelect.setOnClickListener {
+            showUartSelectionDialog()
+        }
+
         btnHybrid.setOnClickListener {
             isHybridModeActive = !isHybridModeActive
             crosshairOverlay.isHybridMode = isHybridModeActive
@@ -762,13 +807,9 @@ class MainActivity : AppCompatActivity() {
         cameraHelper = CameraHelper().apply {
             setStateCallback(object : ICameraHelper.StateCallback {
                 override fun onAttach(device: UsbDevice) {
-                    // АППАРАТНАЯ ФИЛЬТРАЦИЯ: открываем как камеру ТОЛЬКО если это видео-устройство!
                     if (isVideoDevice(device)) {
                         runOnUiThread { tvStatus.text = "Подключение к плате: " + device.deviceName }
                         selectDevice(device)
-                    } else if (isSerialDevice(device)) {
-                        runOnUiThread { tvStatus.text = "Обнаружен UART адаптер..." }
-                        initUsbSerial(device)
                     }
                 }
 
