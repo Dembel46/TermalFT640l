@@ -223,7 +223,7 @@ class MainActivity : AppCompatActivity() {
             })
 
         recordingController = RecordingController(this, storageManager,
-            InternalVideoRecorder(width = 1280, height = 720, frameRate = 15),
+            InternalVideoRecorder(width = 960, height = 540, frameRate = 15)
             object : RecordingController.Ui {
                 override val thermalView: TextureView? get() = cameraView
                 override val opticalView: PreviewView? get() = phoneCameraView
