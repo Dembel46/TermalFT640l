@@ -1,6 +1,7 @@
 package com.example.thermalcapture
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -19,12 +20,14 @@ import android.hardware.usb.UsbManager
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.provider.Settings
 import android.view.Gravity
 import android.view.PixelCopy
 import android.view.Surface
@@ -34,6 +37,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -69,7 +73,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var tvRecordIndicator: TextView
 
-    // Левый выдвижной сайдбар
+    // Боковой бар слева
     private lateinit var leftSidebar: LinearLayout
     private lateinit var sidebarContent: LinearLayout
     private lateinit var btnToggleSidebar: Button
@@ -78,7 +82,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnTracking: Button
     private lateinit var btnPhoto: Button
     private lateinit var btnRecord: Button
-    private lateinit var btnRescanUsb: Button
 
     // Верхняя и нижняя панели
     private lateinit var btnSettings: Button
@@ -100,7 +103,7 @@ class MainActivity : AppCompatActivity() {
     private var isVisionRunning = true
     private var isProcessingFrame = false
 
-    // По умолчанию трекинг ВЫКЛЮЧЕН при старте
+    // По умолчанию трекинг выключен при старте
     private var isTrackingEnabled = false
     private var isThermalStreaming = false
 
@@ -116,9 +119,15 @@ class MainActivity : AppCompatActivity() {
     private var thermalAspectW = 4
     private var thermalAspectH = 3
 
+    // АВТОСКРЫТИЕ САЙДБАРА ЧЕРЕЗ 7 СЕКУНД
+    private val sidebarHandler = Handler(Looper.getMainLooper())
+    private val hideSidebarRunnable = Runnable {
+        collapseSidebar()
+    }
+
     // ВИДЕОРЕГИСТРАТОР
     private var isRecording = false
-    private var isLoopRecordMode = true // true - Цикл (по 3 мин), false - Непрерывно
+    private var isLoopRecordMode = true
     private var recordDurationSec = 0
     private var mediaRecorder: MediaRecorder? = null
     private var mediaProjection: MediaProjection? = null
@@ -204,7 +213,6 @@ class MainActivity : AppCompatActivity() {
         btnTracking = findViewById(R.id.btnTracking)
         btnPhoto = findViewById(R.id.btnPhoto)
         btnRecord = findViewById(R.id.btnRecord)
-        btnRescanUsb = findViewById(R.id.btnRescanUsb)
 
         btnSettings = findViewById(R.id.btnSettings)
         btnThermalFullscreen = findViewById(R.id.btnThermalFullscreen)
@@ -215,6 +223,7 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
+        // Загрузка сохраненных координат юстировки
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
@@ -243,6 +252,7 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout.post {
             setSplitRatio(0.7f, 0.3f, "70/30")
+            resetSidebarTimer()
         }
     }
 
@@ -253,10 +263,6 @@ class MainActivity : AppCompatActivity() {
             if (iface.interfaceClass == UsbConstants.USB_CLASS_VIDEO) return true
         }
         return false
-    }
-
-    private fun isSerialDevice(device: UsbDevice): Boolean {
-        return UsbSerialProber.getDefaultProber().probeDevice(device) != null
     }
 
     private fun initVisionPipeline() {
@@ -464,34 +470,63 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.invalidate()
     }
 
+    private fun resetSidebarTimer() {
+        sidebarHandler.removeCallbacks(hideSidebarRunnable)
+        if (isSidebarExpanded) {
+            sidebarHandler.postDelayed(hideSidebarRunnable, 7000)
+        }
+    }
+
+    private fun collapseSidebar() {
+        isSidebarExpanded = false
+        sidebarContent.visibility = View.GONE
+        btnToggleSidebar.text = "▶"
+        sidebarHandler.removeCallbacks(hideSidebarRunnable)
+    }
+
+    private fun expandSidebar() {
+        isSidebarExpanded = true
+        sidebarContent.visibility = View.VISIBLE
+        btnToggleSidebar.text = "◀"
+        resetSidebarTimer()
+    }
+
     private fun initButtons() {
         btnToggleSidebar.setOnClickListener {
-            isSidebarExpanded = !isSidebarExpanded
-            sidebarContent.visibility = if (isSidebarExpanded) View.VISIBLE else View.GONE
-            btnToggleSidebar.text = if (isSidebarExpanded) "◀" else "▶"
+            if (isSidebarExpanded) {
+                collapseSidebar()
+            } else {
+                expandSidebar()
+            }
         }
 
         btnSettings.setOnClickListener {
+            resetSidebarTimer()
             showSettingsDialog()
         }
 
         btnPhoto.setOnClickListener {
-            takeScreenshotPhoto()
+            resetSidebarTimer()
+            ensureStorageConfigured {
+                takeScreenshotPhoto()
+            }
         }
 
         btnRecord.setOnClickListener {
-            toggleVideoRecording()
+            resetSidebarTimer()
+            ensureStorageConfigured {
+                toggleVideoRecording()
+            }
         }
+
         btnRecord.setOnLongClickListener {
+            resetSidebarTimer()
             showRecordModeDialog()
             true
         }
 
-        btnRescanUsb.setOnClickListener {
-            rescanUsbDevices()
-        }
-
         btnHybrid.setOnClickListener {
+            resetSidebarTimer()
             isHybridModeActive = !isHybridModeActive
             crosshairOverlay.isHybridMode = isHybridModeActive
 
@@ -509,6 +544,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnTracking.setOnClickListener {
+            resetSidebarTimer()
             isTrackingEnabled = !isTrackingEnabled
             if (isTrackingEnabled) {
                 btnTracking.text = "ТРЕК: ВКЛ"
@@ -523,6 +559,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnThermalFullscreen.setOnClickListener {
+            resetSidebarTimer()
             if (isHybridModeActive) {
                 isHybridModeActive = false
                 crosshairOverlay.isHybridMode = false
@@ -543,6 +580,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnMode.setOnClickListener {
+            resetSidebarTimer()
             if (isHybridModeActive) {
                 isHybridModeActive = false
                 crosshairOverlay.isHybridMode = false
@@ -563,6 +601,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnCalibrate.setOnClickListener {
+            resetSidebarTimer()
             crosshairOverlay.isCalibrationMode = !crosshairOverlay.isCalibrationMode
             if (crosshairOverlay.isCalibrationMode) {
                 btnCalibrate.text = "СОХРАНИТЬ"
@@ -583,6 +622,7 @@ class MainActivity : AppCompatActivity() {
             crosshairOverlay.invalidate()
         }
 
+        // Простой циклический зум 0x..3x
         btnZoom.setOnClickListener {
             currentZoomIndex = (currentZoomIndex + 1) % 4
             val zoomFactor = when (currentZoomIndex) {
@@ -602,6 +642,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Меню настроек (Шестеренка ⚙)
+     */
     private fun showSettingsDialog() {
         val soundState = if (alertManager.isSoundEnabled) "ВКЛ" else "ВЫКЛ"
         val flashState = if (alertManager.isFlashEnabled) "ВКЛ" else "ВЫКЛ"
@@ -610,8 +653,11 @@ class MainActivity : AppCompatActivity() {
             "Пропорции тепловизора (4:3, 5:4, 16:9)",
             "Звуковая тревога: $soundState",
             "Световой стробоскоп: $flashState",
-            "Выбор UART порта (CH340/CP2102)",
-            "Откалибровать шторку (NUC / Shutter)"
+            "USB - управление камерой",
+            "Откалибровать шторку (NUC / Shutter)",
+            "Повторный опрос USB устройств",
+            "Папка сохранения фото и видео",
+            "ⓘ Инструкция и описание"
         )
 
         AlertDialog.Builder(this)
@@ -632,19 +678,116 @@ class MainActivity : AppCompatActivity() {
                         serialController.triggerShutter()
                         Toast.makeText(this, "Калибровка шторки отправлена", Toast.LENGTH_SHORT).show()
                     }
+                    5 -> rescanUsbDevices()
+                    6 -> showStorageChoiceDialog(null)
+                    7 -> showHelpManualDialog()
                 }
             }
             .setNegativeButton("Закрыть", null)
             .show()
     }
 
-    private fun rescanUsbDevices() {
-        Toast.makeText(this, "Повторный опрос USB устройств...", Toast.LENGTH_SHORT).show()
-        try {
-            initCameraHelper()
-            initUsbSerial()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Ошибка опроса: " + e.message, Toast.LENGTH_SHORT).show()
+    /**
+     * Диалог краткого описания и инструкции (ⓘ)
+     */
+    private fun showHelpManualDialog() {
+        val message = """
+            ТЕПЛОВИЗИОННЫЙ ПРИЦЕЛЬНЫЙ КОМПЛЕКС FT640L
+            
+            1. БОКОВОЙ ВЫДВИЖНОЙ БАР (СЛЕВА):
+            • [◀ / ▶] — свернуть / открыть панель. Автоматически скрывается через 7 секунд покоя.
+            • РЕЖИМ — быстрое переключение: 70/30 (тепло + оптика), 100% Тепловизор, 100% Оптика.
+            • ЮСТИРОВКА — калибровка параллакса двух камер. Перемещайте красный прицел пальцем, нажмите "СОХРАНИТЬ".
+            • ТРЕК — вкл/выкл компьютерного зрения. Цели >9x9 берутся в контур силуэта, ≤9x9 — в квадрат. Движущиеся цели подсвечиваются КРАСНЫМ на 3 секунды.
+            • ФОТО 📷 — моментальный снимок экрана ровно в том виде, как на дисплее.
+            • ЗАПИСЬ ⏺ — видеорегистратор. Клик: старт/стоп. Зажатие: выбор циклического (по 3 мин) или непрерывного режима.
+
+            2. ОПЕРАТИВНАЯ НИЖНЯЯ ПАНЕЛЬ:
+            • ЗУМ — ступенчатое приближение 0x, 1x, 2x, 3x.
+            • КОНТРАСТ — выбор тепловизионных палитр (Белый горячий, Черный горячий, Железо, Радуга, Красный).
+            • ГИБРИД — наложение 4:3 тепловизора поверх полноэкранной дневной камеры. Проведите пальцем вверх/вниз у левого края экрана для изменения прозрачности.
+
+            3. МЕНЮ НАСТРОЕК (ШЕСТЕРЕНКА ⚙):
+            • Пропорции, звук, стробоскоп вспышкой, повторный опрос подключенных устройств и выбор USB-UART адаптера.
+        """.trimIndent()
+
+        val scrollView = ScrollView(this).apply {
+            setPadding(40, 20, 40, 20)
+            addView(TextView(this@MainActivity).apply {
+                text = message
+                textSize = 12sp
+                setTextColor(0xFFDDDDDD.toInt())
+                setLineSpacing(0f, 1.25f)
+            })
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("ⓘ Инструкция по эксплуатации")
+            .setView(scrollView)
+            .setPositiveButton("Понятно", null)
+            .show()
+    }
+
+    /**
+     * Проверка и запрос выбора папки сохранения при первом старте
+     */
+    private fun ensureStorageConfigured(onReady: () -> Unit) {
+        val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
+        val location = prefs.getString("storage_location", null)
+
+        if (location == null) {
+            showStorageChoiceDialog(onReady)
+        } else {
+            onReady()
+        }
+    }
+
+    private fun showStorageChoiceDialog(onReady: (() -> Unit)?) {
+        val options = arrayOf(
+            "Штатные папки устройства (Галерея: DCIM / Movies)",
+            "Своя папка в корне устройства (/ThermalCapture)"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("Куда сохранять фото и видео?")
+            .setItems(options) { _, which ->
+                val choice = if (which == 0) "standard" else "root"
+                getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("storage_location", choice)
+                    .apply()
+
+                if (choice == "root" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    if (!Environment.isExternalStorageManager()) {
+                        try {
+                            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                data = Uri.parse("package:$packageName")
+                            }
+                            startActivity(intent)
+                        } catch (e: Exception) {}
+                    }
+                }
+
+                Toast.makeText(this, "Место сохранения: " + options[which], Toast.LENGTH_SHORT).show()
+                onReady?.invoke()
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun getTargetDirectory(subfolder: String): File {
+        val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
+        val location = prefs.getString("storage_location", "standard")
+
+        return if (location == "root") {
+            val rootDir = File(Environment.getExternalStorageDirectory(), "ThermalCapture/$subfolder")
+            if (!rootDir.exists()) rootDir.mkdirs()
+            rootDir
+        } else {
+            val baseType = if (subfolder == "Photos") Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES
+            val pubDir = File(Environment.getExternalStoragePublicDirectory(baseType), "ThermalCapture")
+            if (!pubDir.exists()) pubDir.mkdirs()
+            pubDir
         }
     }
 
@@ -657,7 +800,7 @@ class MainActivity : AppCompatActivity() {
         try {
             PixelCopy.request(window, bmp, { result ->
                 if (result == PixelCopy.SUCCESS) {
-                    saveBitmapToGallery(bmp)
+                    saveBitmapToStorage(bmp)
                 } else {
                     bmp.recycle()
                     Toast.makeText(this, "Не удалось создать снимок", Toast.LENGTH_SHORT).show()
@@ -668,8 +811,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun saveBitmapToGallery(bitmap: Bitmap) {
-        val dir = getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: filesDir
+    private fun saveBitmapToStorage(bitmap: Bitmap) {
+        val dir = getTargetDirectory("Photos")
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val file = File(dir, "IMG_$timeStamp.jpg")
 
@@ -696,7 +839,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startMediaRecorderInternal() {
         val projection = mediaProjection ?: return
-        val dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: filesDir
+        val dir = getTargetDirectory("Videos")
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         currentRecordFile = File(dir, "REC_$timeStamp.mp4")
 
@@ -736,7 +879,6 @@ class MainActivity : AppCompatActivity() {
             recordDurationSec = 0
             updateRecordUiState()
             recordTimerHandler.post(recordTimerRunnable)
-
             enforceStorageLimit(dir)
         } catch (e: Exception) {
             stopVideoRecording()
@@ -750,7 +892,7 @@ class MainActivity : AppCompatActivity() {
             mediaRecorder?.reset()
         } catch (e: Exception) {}
 
-        val dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: filesDir
+        val dir = getTargetDirectory("Videos")
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         currentRecordFile = File(dir, "REC_$timeStamp.mp4")
 
@@ -833,6 +975,23 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun rescanUsbDevices() {
+        Toast.makeText(this, "Повторный опрос USB устройств...", Toast.LENGTH_SHORT).show()
+        try {
+            initCameraHelper()
+            val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+            val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
+            if (drivers.isNotEmpty()) {
+                val device = drivers[0].device
+                if (usbManager.hasPermission(device)) {
+                    serialController.connect(this, device)
+                }
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Ошибка опроса: " + e.message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun showUartSelectionDialog() {
         val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
         val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
@@ -848,7 +1007,7 @@ class MainActivity : AppCompatActivity() {
                 "COM-порт не распознан. Подключенные USB:\n$names"
             }
             AlertDialog.Builder(this)
-                .setTitle("Преобразователь UART")
+                .setTitle("USB - управление камерой")
                 .setMessage(msg)
                 .setPositiveButton("OK", null)
                 .show()
@@ -863,7 +1022,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("Выберите UART преобразователь:")
+            .setTitle("USB - управление камерой:")
             .setItems(items) { _, which ->
                 val selectedDriver = drivers[which]
                 val device = selectedDriver.device
@@ -894,24 +1053,6 @@ class MainActivity : AppCompatActivity() {
         }
         val permissionIntent = PendingIntent.getBroadcast(this, 0, intent, flags)
         usbManager.requestPermission(device, permissionIntent)
-    }
-
-    private fun initUsbSerial(targetDevice: UsbDevice? = null) {
-        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-        val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
-
-        if (drivers.isEmpty()) return
-
-        val driver = if (targetDevice != null) {
-            drivers.firstOrNull { it.device == targetDevice } ?: drivers[0]
-        } else {
-            drivers[0]
-        }
-        val device = driver.device
-
-        if (usbManager.hasPermission(device)) {
-            serialController.connect(this, device)
-        }
     }
 
     private fun showPaletteDialog() {
@@ -1052,8 +1193,6 @@ class MainActivity : AppCompatActivity() {
                     if (isVideoDevice(device)) {
                         runOnUiThread { tvStatus.text = "Подключение к плате: " + device.deviceName }
                         selectDevice(device)
-                    } else if (isSerialDevice(device)) {
-                        initUsbSerial(device)
                     }
                 }
 
@@ -1100,6 +1239,8 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         isVisionRunning = false
         visionThread.quitSafely()
+        sidebarHandler.removeCallbacks(hideSidebarRunnable)
+        recordTimerHandler.removeCallbacks(recordTimerRunnable)
         alertManager.release()
         try {
             unregisterReceiver(usbReceiver)
