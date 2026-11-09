@@ -9,6 +9,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import java.io.File
@@ -24,6 +25,8 @@ class InternalVideoRecorder(
     private var mediaMuxer: MediaMuxer? = null
     private var videoTrackIndex = -1
     private var isMuxerStarted = false
+    private var hasWrittenKeyFrame = false
+    private var sampleCount = 0
 
     private var recordThread: HandlerThread? = null
     private var recordHandler: Handler? = null
@@ -56,7 +59,7 @@ class InternalVideoRecorder(
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
                 setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // Ключевой кадр каждую секунду
             }
 
             val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -64,9 +67,17 @@ class InternalVideoRecorder(
             codec.start()
             mediaCodec = codec
 
+            // Запрос немедленного ключевого кадра при старте
+            try {
+                val params = Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) }
+                codec.setParameters(params)
+            } catch (e: Exception) {}
+
             mediaMuxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             isMuxerStarted = false
             videoTrackIndex = -1
+            hasWrittenKeyFrame = false
+            sampleCount = 0
             frameIndex = 0L
             lastPtsUs = 0L
             isBusyEncoding = false
@@ -77,14 +88,11 @@ class InternalVideoRecorder(
 
             return true
         } catch (t: Throwable) {
-            stop()
+            stop(null)
             return false
         }
     }
 
-    /**
-     * Потокобезопасная очередь: кадры забираются в UI-потоке, а сведение и кодирование идут в фоне
-     */
     fun queueFrame(
         thermalBmp: Bitmap?,
         opticalBmp: Bitmap?,
@@ -121,7 +129,6 @@ class InternalVideoRecorder(
     ) {
         val codec = mediaCodec ?: return
 
-        // Отрисовка кадра в соответствии с текущим режимом экрана приложения
         compositeCanvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), clearPaint)
 
         when {
@@ -143,7 +150,6 @@ class InternalVideoRecorder(
                 }
             }
             displayMode == 0 -> {
-                // 70 / 30
                 val splitX = (width * 0.7f).toInt()
                 thermalBmp?.let {
                     val src = Rect(0, 0, it.width, it.height)
@@ -157,7 +163,6 @@ class InternalVideoRecorder(
                 }
             }
             displayMode == 1 -> {
-                // ТЕПЛО 100%
                 thermalBmp?.let {
                     val src = Rect(0, 0, it.width, it.height)
                     val dst = Rect(0, 0, width, height)
@@ -165,7 +170,6 @@ class InternalVideoRecorder(
                 }
             }
             displayMode == 2 -> {
-                // ОПТИКА 100%
                 opticalBmp?.let {
                     val src = Rect(0, 0, it.width, it.height)
                     val dst = Rect(0, 0, width, height)
@@ -195,11 +199,12 @@ class InternalVideoRecorder(
         val codec = mediaCodec ?: return
         val muxer = mediaMuxer ?: return
         val bufferInfo = MediaCodec.BufferInfo()
+        var retryCount = 0
 
         while (true) {
-            val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
+            val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000)
             if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                if (!endOfStream) break
+                if (!endOfStream || ++retryCount > 10) break
             } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 if (!isMuxerStarted) {
                     videoTrackIndex = muxer.addTrack(codec.outputFormat)
@@ -209,14 +214,25 @@ class InternalVideoRecorder(
             } else if (outputIndex >= 0) {
                 val outputBuffer = codec.getOutputBuffer(outputIndex)
                 if (outputBuffer != null && isMuxerStarted && bufferInfo.size > 0) {
-                    if (bufferInfo.presentationTimeUs < lastPtsUs) {
-                        bufferInfo.presentationTimeUs = lastPtsUs + 1000L
+                    // Видеофайл обязан начинаться строго с ключевого кадра
+                    val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                    if (!hasWrittenKeyFrame) {
+                        if (isKeyFrame) {
+                            hasWrittenKeyFrame = true
+                        }
                     }
-                    lastPtsUs = bufferInfo.presentationTimeUs
 
-                    outputBuffer.position(bufferInfo.offset)
-                    outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
-                    muxer.writeSampleData(videoTrackIndex, outputBuffer, bufferInfo)
+                    if (hasWrittenKeyFrame) {
+                        if (bufferInfo.presentationTimeUs < lastPtsUs) {
+                            bufferInfo.presentationTimeUs = lastPtsUs + 1000L
+                        }
+                        lastPtsUs = bufferInfo.presentationTimeUs
+
+                        outputBuffer.position(bufferInfo.offset)
+                        outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                        muxer.writeSampleData(videoTrackIndex, outputBuffer, bufferInfo)
+                        sampleCount++
+                    }
                 }
                 codec.releaseOutputBuffer(outputIndex, false)
                 if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
@@ -226,31 +242,58 @@ class InternalVideoRecorder(
         }
     }
 
-    fun stop() {
-        if (!isRecording) return
+    /**
+     * Безопасная асинхронная остановка: не подвешивает главный поток и финализирует MP4
+     */
+    fun stop(onCompleted: (() -> Unit)?) {
+        if (!isRecording) {
+            onCompleted?.invoke()
+            return
+        }
         isRecording = false
 
-        recordHandler?.removeCallbacksAndMessages(null)
-        recordThread?.quitSafely()
-        recordThread = null
-        recordHandler = null
+        val handler = recordHandler
+        val thread = recordThread
 
-        try {
-            drainCodec(true)
-            mediaCodec?.stop()
-            mediaCodec?.release()
-        } catch (e: Exception) {}
-        mediaCodec = null
+        if (handler != null && thread != null) {
+            handler.post {
+                try {
+                    // Отправляем сигнал конца потока (EOS)
+                    mediaCodec?.let { codec ->
+                        val inputIndex = codec.dequeueInputBuffer(10_000)
+                        if (inputIndex >= 0) {
+                            val pts = frameIndex * (1_000_000L / frameRate)
+                            codec.queueInputBuffer(inputIndex, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        }
+                    }
+                    drainCodec(true)
+                } catch (e: Exception) {}
 
-        try {
-            if (isMuxerStarted) {
-                mediaMuxer?.stop()
+                try {
+                    mediaCodec?.stop()
+                    mediaCodec?.release()
+                } catch (e: Exception) {}
+                mediaCodec = null
+
+                try {
+                    if (isMuxerStarted && sampleCount > 0) {
+                        mediaMuxer?.stop()
+                    }
+                    mediaMuxer?.release()
+                } catch (e: Exception) {}
+                mediaMuxer = null
+                isMuxerStarted = false
+                videoTrackIndex = -1
+
+                thread.quitSafely()
+                recordThread = null
+                recordHandler = null
+
+                onCompleted?.invoke()
             }
-            mediaMuxer?.release()
-        } catch (e: Exception) {}
-        mediaMuxer = null
-        isMuxerStarted = false
-        videoTrackIndex = -1
+        } else {
+            onCompleted?.invoke()
+        }
     }
 
     private fun convertArgbToNv12(argb: IntArray, nv12: ByteArray, w: Int, h: Int) {
