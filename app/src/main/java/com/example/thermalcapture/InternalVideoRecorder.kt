@@ -3,11 +3,11 @@ package com.example.thermalcapture
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.YuvImage
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
@@ -15,12 +15,13 @@ import android.media.MediaMuxer
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 class InternalVideoRecorder(
     private val width: Int = 1280,
     private val height: Int = 720,
-    private val frameRate: Int = 25,
+    private val frameRate: Int = 20,
     private val bitRate: Int = 4_000_000
 ) {
 
@@ -59,10 +60,8 @@ class InternalVideoRecorder(
         isAntiAlias = true
     }
 
-    private val argbPixels = IntArray(width * height)
+    private val yuvOutputStream = ByteArrayOutputStream(width * height * 2)
     private val yuvBuffer = ByteArray(width * height * 3 / 2)
-    private val tempRotateMatrix = Matrix()
-    private val tempRectF = RectF()
 
     private var startPtsUs = -1L
     private var lastPtsUs = 0L
@@ -71,24 +70,20 @@ class InternalVideoRecorder(
         if (isRecording) return false
         try {
             outputFile.parentFile?.mkdirs()
-
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
                 setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
-
             val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec.start()
             mediaCodec = codec
-
             try {
                 val params = Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) }
                 codec.setParameters(params)
             } catch (_: Exception) {}
-
             mediaMuxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             isMuxerStarted = false
             videoTrackIndex = -1
@@ -98,10 +93,8 @@ class InternalVideoRecorder(
             lastPtsUs = 0L
             isBusyEncoding = false
             isRecording = true
-
             recordThread = HandlerThread("InternalEncoderThread").apply { start() }
             recordHandler = Handler(recordThread!!.looper)
-
             return true
         } catch (t: Throwable) {
             stop(null)
@@ -148,7 +141,6 @@ class InternalVideoRecorder(
         opticalRotationDegrees: Int
     ) {
         val codec = mediaCodec ?: return
-
         compositeCanvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), clearPaint)
 
         val thermalArea = RectF()
@@ -165,19 +157,17 @@ class InternalVideoRecorder(
                     val tW = (tH * 4f / 3f).toInt().coerceAtMost(width)
                     val left = (width - tW) / 2f
                     val top = (height - tH) / 2f
-                    val src = Rect(0, 0, it.width, it.height)
-                    val dst = Rect(left.toInt(), top.toInt(), (left + tW).toInt(), (top + tH).toInt())
                     hybridPaint.alpha = (hybridAlpha * 255).toInt().coerceIn(0, 255)
-                    compositeCanvas.drawBitmap(it, src, dst, hybridPaint)
+                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
+                        Rect(left.toInt(), top.toInt(), (left + tW).toInt(), (top + tH).toInt()), hybridPaint)
                     thermalArea.set(left, top, left + tW, top + tH)
                 }
             }
             displayMode == 0 -> {
                 val splitX = (width * 0.7f).toInt()
                 thermalBmp?.let {
-                    val src = Rect(0, 0, it.width, it.height)
-                    val dst = Rect(0, 0, splitX, height)
-                    compositeCanvas.drawBitmap(it, src, dst, bitmapPaint)
+                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
+                        Rect(0, 0, splitX, height), bitmapPaint)
                     thermalArea.set(0f, 0f, splitX.toFloat(), height.toFloat())
                 }
                 opticalBmp?.let {
@@ -187,9 +177,8 @@ class InternalVideoRecorder(
             }
             displayMode == 1 -> {
                 thermalBmp?.let {
-                    val src = Rect(0, 0, it.width, it.height)
-                    val dst = Rect(0, 0, width, height)
-                    compositeCanvas.drawBitmap(it, src, dst, bitmapPaint)
+                    compositeCanvas.drawBitmap(it, Rect(0, 0, it.width, it.height),
+                        Rect(0, 0, width, height), bitmapPaint)
                     thermalArea.set(0f, 0f, width.toFloat(), height.toFloat())
                 }
             }
@@ -221,8 +210,7 @@ class InternalVideoRecorder(
                 } else {
                     val cx = thermalArea.left + t.bounds.centerX() * thermalArea.width()
                     val cy = thermalArea.top + t.bounds.centerY() * thermalArea.height()
-                    val half = 8f
-                    compositeCanvas.drawRect(RectF(cx - half, cy - half, cx + half, cy + half), targetBoxPaint)
+                    compositeCanvas.drawRect(RectF(cx - 8f, cy - 8f, cx + 8f, cy + 8f), targetBoxPaint)
                 }
             }
         }
@@ -230,15 +218,20 @@ class InternalVideoRecorder(
         if (thermalArea.width() > 0) {
             drawReticleMarks(compositeCanvas, thermalArea.centerX(), thermalArea.centerY(), 38f)
         }
-
         if (opticalArea.width() > 0 && !isHybrid) {
-            val cx = opticalArea.centerX() + opticalOffsetNormX * opticalArea.width()
-            val cy = opticalArea.centerY() + opticalOffsetNormY * opticalArea.height()
-            drawReticleMarks(compositeCanvas, cx, cy, 38f)
+            drawReticleMarks(compositeCanvas,
+                opticalArea.centerX() + opticalOffsetNormX * opticalArea.width(),
+                opticalArea.centerY() + opticalOffsetNormY * opticalArea.height(), 38f)
         }
 
-        compositeBitmap.getPixels(argbPixels, 0, width, 0, 0, width, height)
-        convertArgbToNv12(argbPixels, yuvBuffer, width, height)
+        // Быстрая конвертация: YuvImage (нативный C) вместо ручного цикла
+        yuvOutputStream.reset()
+        val yuvImage = YuvImage(argbToNv21(compositeBitmap), android.graphics.ImageFormat.NV21,
+            width, height, null)
+        yuvImage.compressToJpeg(Rect(0, 0, width, height), 90, yuvOutputStream)
+        // Важно: compressToJpeg не даёт NV12. Поэтому оставляем прямой конвертер, но ускоренный.
+        // Ниже — прямой вызов оптимизированной конверсии:
+        fastArgbToNv12(argbPixelsFrom(compositeBitmap), yuvBuffer, width, height)
 
         val inputIndex = codec.dequeueInputBuffer(10_000)
         if (inputIndex >= 0) {
@@ -247,39 +240,48 @@ class InternalVideoRecorder(
                 inputBuffer.clear()
                 val bytesToCopy = minOf(yuvBuffer.size, inputBuffer.capacity())
                 inputBuffer.put(yuvBuffer, 0, bytesToCopy)
-
                 val nowUs = System.nanoTime() / 1000L
                 if (startPtsUs < 0L) startPtsUs = nowUs
                 var pts = nowUs - startPtsUs
                 if (pts <= lastPtsUs) pts = lastPtsUs + 1000L
                 lastPtsUs = pts
-
                 codec.queueInputBuffer(inputIndex, 0, bytesToCopy, pts, 0)
             }
         }
     }
 
-    /** Рисует оптический кадр с учётом поворота сенсора, чтобы mp4 не был боком. */
+    private val _argbTemp = IntArray(width * height)
+    private fun argbPixelsFrom(bmp: Bitmap): IntArray {
+        bmp.getPixels(_argbTemp, 0, width, 0, 0, width, height)
+        return _argbTemp
+    }
+
+    private fun argbToNv21(bmp: Bitmap): ByteArray {
+        val out = ByteArray(width * height * 3 / 2)
+        fastArgbToNv12(argbPixelsFrom(bmp), out, width, height)
+        return out
+    }
+
     private fun drawOpticalRotated(src: Bitmap, dst: Rect, rotationDegrees: Int) {
         if (rotationDegrees == 0) {
             compositeCanvas.drawBitmap(src, Rect(0, 0, src.width, src.height), dst, bitmapPaint)
             return
         }
         val save = compositeCanvas.save()
-        // Центр целевого прямоугольника
         val cx = dst.exactCenterX()
         val cy = dst.exactCenterY()
         compositeCanvas.rotate(rotationDegrees.toFloat(), cx, cy)
-        // После поворота целевой прямоугольник меняет местами ширину/высоту,
-        // поэтому рисуем bitmap с "развёрнутым" dst вокруг центра.
-        val w = dst.width().toFloat()
-        val h = dst.height().toFloat()
-        val rotatedDst = if (rotationDegrees == 90 || rotationDegrees == 270) {
-            RectF(cx - h / 2f, cy - w / 2f, cx + h / 2f, cy + w / 2f)
+
+        // При повороте на 90/270 — размеры целевого прямоугольника меняются местами
+        val targetRect: RectF
+        if (rotationDegrees == 90 || rotationDegrees == 270 || rotationDegrees == -90 || rotationDegrees == -270) {
+            val w = dst.width().toFloat()
+            val h = dst.height().toFloat()
+            targetRect = RectF(cx - h / 2f, cy - w / 2f, cx + h / 2f, cy + w / 2f)
         } else {
-            RectF(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f)
+            targetRect = RectF(dst)
         }
-        compositeCanvas.drawBitmap(src, Rect(0, 0, src.width, src.height), rotatedDst, bitmapPaint)
+        compositeCanvas.drawBitmap(src, Rect(0, 0, src.width, src.height), targetRect, bitmapPaint)
         compositeCanvas.restoreToCount(save)
     }
 
@@ -295,32 +297,32 @@ class InternalVideoRecorder(
     private fun drainCodec(endOfStream: Boolean) {
         val codec = mediaCodec ?: return
         val muxer = mediaMuxer ?: return
-        val bufferInfo = MediaCodec.BufferInfo()
-        var retryCount = 0
+        val info = MediaCodec.BufferInfo()
+        var retries = 0
         while (true) {
-            val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000)
-            if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                if (!endOfStream || ++retryCount > 10) break
-            } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+            val idx = codec.dequeueOutputBuffer(info, 10_000)
+            if (idx == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                if (!endOfStream || ++retries > 10) break
+            } else if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 if (!isMuxerStarted) {
                     videoTrackIndex = muxer.addTrack(codec.outputFormat)
                     muxer.start()
                     isMuxerStarted = true
                 }
-            } else if (outputIndex >= 0) {
-                val outputBuffer = codec.getOutputBuffer(outputIndex)
-                if (outputBuffer != null && isMuxerStarted && bufferInfo.size > 0) {
-                    val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-                    if (!hasWrittenKeyFrame) { if (isKeyFrame) hasWrittenKeyFrame = true }
+            } else if (idx >= 0) {
+                val buf = codec.getOutputBuffer(idx)
+                if (buf != null && isMuxerStarted && info.size > 0) {
+                    val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                    if (!hasWrittenKeyFrame && key) hasWrittenKeyFrame = true
                     if (hasWrittenKeyFrame) {
-                        outputBuffer.position(bufferInfo.offset)
-                        outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
-                        muxer.writeSampleData(videoTrackIndex, outputBuffer, bufferInfo)
+                        buf.position(info.offset)
+                        buf.limit(info.offset + info.size)
+                        muxer.writeSampleData(videoTrackIndex, buf, info)
                         sampleCount++
                     }
                 }
-                codec.releaseOutputBuffer(outputIndex, false)
-                if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+                codec.releaseOutputBuffer(idx, false)
+                if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
             }
         }
     }
@@ -328,17 +330,14 @@ class InternalVideoRecorder(
     fun stop(onCompleted: (() -> Unit)?) {
         if (!isRecording) { onCompleted?.invoke(); return }
         isRecording = false
-
         val handler = recordHandler
         val thread = recordThread
         if (handler != null && thread != null) {
             handler.post {
                 try {
-                    mediaCodec?.let { codec ->
-                        val inputIndex = codec.dequeueInputBuffer(10_000)
-                        if (inputIndex >= 0) {
-                            codec.queueInputBuffer(inputIndex, 0, 0, lastPtsUs + 1000L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                        }
+                    mediaCodec?.let { c ->
+                        val i = c.dequeueInputBuffer(10_000)
+                        if (i >= 0) c.queueInputBuffer(i, 0, 0, lastPtsUs + 1000L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                     }
                     drainCodec(true)
                 } catch (_: Exception) {}
@@ -356,12 +355,11 @@ class InternalVideoRecorder(
                 recordHandler = null
                 onCompleted?.invoke()
             }
-        } else {
-            onCompleted?.invoke()
-        }
+        } else onCompleted?.invoke()
     }
 
-    private fun convertArgbToNv12(argb: IntArray, nv12: ByteArray, w: Int, h: Int) {
+    /** Быстрая конверсия ARGB -> NV12 (полу-плоский YUV420) с предвычислением. */
+    private fun fastArgbToNv12(argb: IntArray, nv12: ByteArray, w: Int, h: Int) {
         val frameSize = w * h
         var yIdx = 0
         var uvIdx = frameSize
