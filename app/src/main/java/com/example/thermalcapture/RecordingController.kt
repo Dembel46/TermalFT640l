@@ -31,13 +31,15 @@ class RecordingController(
         fun getOpticalOffsetNorm(): Pair<Float, Float>
         fun getDetectedTargets(): List<DetectedTarget>
         fun getOpticalRotationDegrees(): Int
+        fun getThermalRotationDegrees(): Int
         fun onRecordingStateChanged(recording: Boolean)
         fun onRecordingTick(durationSec: Int)
         fun onRecordingError(message: String)
     }
 
     companion object {
-        private const val FRAME_INTERVAL_MS = 50L
+        private const val FRAME_INTERVAL_MS = 66L   // 15 FPS
+        private const val OPTICAL_EVERY_N = 2
         private const val LOOP_SEGMENT_SEC = 180
     }
 
@@ -53,6 +55,7 @@ class RecordingController(
 
     private var lastOpticalFrame: Bitmap? = null
     private var lastThermalFrame: Bitmap? = null
+    private var frameCounter = 0
 
     @Volatile private var isRecording = false
     private var durationSec = 0
@@ -74,6 +77,7 @@ class RecordingController(
         }
         isRecording = true
         durationSec = 0
+        frameCounter = 0
         nextTickMs = SystemClock.uptimeMillis() + 1000L
         lastOpticalFrame = null
         lastThermalFrame = null
@@ -130,6 +134,8 @@ class RecordingController(
                 mainHandler.post { ui.onRecordingTick(durationSec) }
             }
 
+            frameCounter++
+
             val thermalView = ui.thermalView
             val opticalView = ui.opticalView
 
@@ -142,8 +148,10 @@ class RecordingController(
             if (freshThermal != null) lastThermalFrame = freshThermal
             val tBmp: Bitmap? = freshThermal ?: lastThermalFrame
 
+            // Оптика — раз в N кадров
             var freshOptical: Bitmap? = null
-            if (opticalView != null && opticalView.visibility == View.VISIBLE) {
+            if (opticalView != null && opticalView.visibility == View.VISIBLE
+                && frameCounter % OPTICAL_EVERY_N == 0) {
                 val ref = AtomicReference<Bitmap?>(null)
                 val done = Object()
                 mainHandler.post {
@@ -179,7 +187,7 @@ class RecordingController(
                 opticalOffsetNormY = optNormY,
                 targets = ui.getDetectedTargets(),
                 opticalRotationDegrees = ui.getOpticalRotationDegrees(),
-                thermalRotationDegrees = 0   // без поворота тепловизора
+                thermalRotationDegrees = ui.getThermalRotationDegrees()
             )
 
             captureHandler?.postDelayed(this, FRAME_INTERVAL_MS)
