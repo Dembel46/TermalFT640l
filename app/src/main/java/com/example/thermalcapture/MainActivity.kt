@@ -12,14 +12,9 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
-import android.media.MediaRecorder
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -40,7 +35,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
@@ -103,7 +97,6 @@ class MainActivity : AppCompatActivity() {
     private var isVisionRunning = true
     private var isProcessingFrame = false
 
-    // По умолчанию трекинг выключен при старте
     private var isTrackingEnabled = false
     private var isThermalStreaming = false
 
@@ -121,17 +114,13 @@ class MainActivity : AppCompatActivity() {
 
     // АВТОСКРЫТИЕ САЙДБАРА ЧЕРЕЗ 7 СЕКУНД
     private val sidebarHandler = Handler(Looper.getMainLooper())
-    private val hideSidebarRunnable = Runnable {
-        collapseSidebar()
-    }
+    private val hideSidebarRunnable = Runnable { collapseSidebar() }
 
-    // ВИДЕОРЕГИСТРАТОР
+    // НАСТОЯЩИЙ ВНУТРЕННИЙ ВИДЕОРЕГИСТРАТОР (БЕЗ СИСТЕМНЫХ ЗАПРОСОВ)
+    private val videoRecorder = InternalVideoRecorder(width = 1280, height = 720, frameRate = 25)
     private var isRecording = false
     private var isLoopRecordMode = true
     private var recordDurationSec = 0
-    private var mediaRecorder: MediaRecorder? = null
-    private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
     private var currentRecordFile: File? = null
 
     private val recordTimerHandler = Handler(Looper.getMainLooper())
@@ -150,20 +139,6 @@ class MainActivity : AppCompatActivity() {
 
                 recordTimerHandler.postDelayed(this, 1000)
             }
-        }
-    }
-
-    private val screenCaptureLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == RESULT_OK && result.data != null) {
-            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = projectionManager.getMediaProjection(result.resultCode, result.data!!)
-            startMediaRecorderInternal()
-        } else {
-            Toast.makeText(this, "Запись экрана отклонена", Toast.LENGTH_SHORT).show()
-            isRecording = false
-            updateRecordUiState()
         }
     }
 
@@ -223,7 +198,6 @@ class MainActivity : AppCompatActivity() {
         crosshairOverlay.phoneCameraView = phoneCameraView
         crosshairOverlay.thermalCameraView = cameraView
 
-        // Загрузка сохраненных координат юстировки
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
@@ -493,11 +467,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun initButtons() {
         btnToggleSidebar.setOnClickListener {
-            if (isSidebarExpanded) {
-                collapseSidebar()
-            } else {
-                expandSidebar()
-            }
+            if (isSidebarExpanded) collapseSidebar() else expandSidebar()
         }
 
         btnSettings.setOnClickListener {
@@ -689,19 +659,19 @@ class MainActivity : AppCompatActivity() {
             
             1. БОКОВОЙ ВЫДВИЖНОЙ БАР (СЛЕВА):
             • [◀ / ▶] — свернуть / открыть панель. Автоматически скрывается через 7 секунд покоя.
-            • РЕЖИМ — быстрое переключение: 70/30 (тепло + оптика), 100% Тепловизор, 100% Оптика.
+            • РЕЖИМ — переключение: 70/30 (тепло + оптика), 100% Тепловизор, 100% Оптика.
             • ЮСТИРОВКА — калибровка параллакса двух камер. Перемещайте красный прицел пальцем, нажмите "СОХРАНИТЬ".
             • ТРЕК — вкл/выкл компьютерного зрения. Цели >9x9 берутся в контур силуэта, ≤9x9 — в квадрат. Движущиеся цели подсвечиваются КРАСНЫМ на 3 секунды.
-            • ФОТО 📷 — моментальный снимок экрана ровно в том виде, как на дисплее.
-            • ЗАПИСЬ ⏺ — видеорегистратор. Клик: старт/стоп. Зажатие: выбор циклического (по 3 мин) или непрерывного режима.
+            • ФОТО 📷 — снимок экрана в текущем режиме отображения.
+            • ЗАПИСЬ ⏺ — внутренний видеорегистратор (без запросов системы). Клик: старт/стоп. Зажатие: выбор циклического (по 3 мин) или непрерывного режима.
 
             2. ОПЕРАТИВНАЯ НИЖНЯЯ ПАНЕЛЬ:
             • ЗУМ — ступенчатое приближение 0x, 1x, 2x, 3x.
-            • КОНТРАСТ — выбор тепловизионных палитр (Белый горячий, Черный горячий, Железо, Радуга, Красный).
+            • КОНТРАСТ — выбор палитр (Белый горячий, Черный горячий, Железо, Радуга, Красный).
             • ГИБРИД — наложение 4:3 тепловизора поверх полноэкранной дневной камеры. Проведите пальцем вверх/вниз у левого края экрана для изменения прозрачности.
 
             3. МЕНЮ НАСТРОЕК (ШЕСТЕРЕНКА ⚙):
-            • Пропорции, звук, стробоскоп вспышкой, повторный опрос подключенных устройств и выбор USB-UART адаптера.
+            • Пропорции, звук, стробоскоп вспышкой, повторный опрос устройств и подключение UART управления камерой.
         """.trimIndent()
 
         val scrollView = ScrollView(this).apply {
@@ -818,92 +788,69 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Внутренняя запись видеорегистратора (БЕЗ MediaProjection / системных диалогов)
+     */
     private fun toggleVideoRecording() {
         if (!isRecording) {
-            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
+            startInternalVideoRecording()
         } else {
             stopVideoRecording()
         }
     }
 
-    private fun startMediaRecorderInternal() {
-        val projection = mediaProjection ?: return
+    private fun startInternalVideoRecording() {
         val dir = getTargetDirectory("Videos")
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         currentRecordFile = File(dir, "REC_$timeStamp.mp4")
 
-        val width = rootLayout.width.takeIf { it > 0 } ?: 1920
-        val height = rootLayout.height.takeIf { it > 0 } ?: 1080
-
-        try {
-            @Suppress("DEPRECATION")
-            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                MediaRecorder(this)
-            } else {
-                MediaRecorder()
-            }.apply {
-                setVideoSource(MediaRecorder.VideoSource.SURFACE)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setOutputFile(currentRecordFile!!.absolutePath)
-                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-                setVideoSize(width, height)
-                setVideoFrameRate(30)
-                setVideoEncodingBitRate(6 * 1024 * 1024)
-                prepare()
-            }
-
-            virtualDisplay = projection.createVirtualDisplay(
-                "ScreenRecorder",
-                width,
-                height,
-                resources.displayMetrics.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                mediaRecorder!!.surface,
-                null,
-                null
+        val started = videoRecorder.start(currentRecordFile!!) {
+            // Поставщик кадров напрямую из видеопотоков (0% нагрузки на систему трансляции)
+            val tBmp = if (isThermalStreaming && cameraView.isAvailable) cameraView.bitmap else null
+            val oBmp = if (phoneCameraView.visibility == View.VISIBLE) phoneCameraView.bitmap else null
+            InternalVideoRecorder.RecordFrameData(
+                thermalBmp = tBmp,
+                opticalBmp = oBmp,
+                displayMode = displayMode,
+                isHybrid = isHybridModeActive,
+                hybridAlpha = crosshairOverlay.hybridAlpha
             )
+        }
 
-            mediaRecorder!!.start()
+        if (started) {
             isRecording = true
             recordDurationSec = 0
             updateRecordUiState()
             recordTimerHandler.post(recordTimerRunnable)
             enforceStorageLimit(dir)
-        } catch (e: Exception) {
-            stopVideoRecording()
-            Toast.makeText(this, "Ошибка старта записи: " + e.message, Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Не удалось запустить видеозапись", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun restartRecordSegment() {
-        try {
-            mediaRecorder?.stop()
-            mediaRecorder?.reset()
-        } catch (e: Exception) {}
+        videoRecorder.stop()
 
         val dir = getTargetDirectory("Videos")
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         currentRecordFile = File(dir, "REC_$timeStamp.mp4")
 
-        val width = rootLayout.width.takeIf { it > 0 } ?: 1920
-        val height = rootLayout.height.takeIf { it > 0 } ?: 1080
+        val started = videoRecorder.start(currentRecordFile!!) {
+            val tBmp = if (isThermalStreaming && cameraView.isAvailable) cameraView.bitmap else null
+            val oBmp = if (phoneCameraView.visibility == View.VISIBLE) phoneCameraView.bitmap else null
+            InternalVideoRecorder.RecordFrameData(
+                thermalBmp = tBmp,
+                opticalBmp = oBmp,
+                displayMode = displayMode,
+                isHybrid = isHybridModeActive,
+                hybridAlpha = crosshairOverlay.hybridAlpha
+            )
+        }
 
-        try {
-            mediaRecorder?.apply {
-                setVideoSource(MediaRecorder.VideoSource.SURFACE)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setOutputFile(currentRecordFile!!.absolutePath)
-                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-                setVideoSize(width, height)
-                setVideoFrameRate(30)
-                setVideoEncodingBitRate(6 * 1024 * 1024)
-                prepare()
-                start()
-            }
+        if (started) {
             recordDurationSec = 0
             enforceStorageLimit(dir)
-        } catch (e: Exception) {
+        } else {
             stopVideoRecording()
         }
     }
@@ -911,21 +858,9 @@ class MainActivity : AppCompatActivity() {
     private fun stopVideoRecording() {
         isRecording = false
         recordTimerHandler.removeCallbacks(recordTimerRunnable)
-        try {
-            mediaRecorder?.stop()
-            mediaRecorder?.reset()
-            mediaRecorder?.release()
-        } catch (e: Exception) {}
-        mediaRecorder = null
-
-        virtualDisplay?.release()
-        virtualDisplay = null
-
-        mediaProjection?.stop()
-        mediaProjection = null
-
+        videoRecorder.stop()
         updateRecordUiState()
-        Toast.makeText(this, "Запись сохранена", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Запись сохранена: " + (currentRecordFile?.name ?: ""), Toast.LENGTH_SHORT).show()
     }
 
     private fun enforceStorageLimit(dir: File) {
@@ -1231,6 +1166,7 @@ class MainActivity : AppCompatActivity() {
         visionThread.quitSafely()
         sidebarHandler.removeCallbacks(hideSidebarRunnable)
         recordTimerHandler.removeCallbacks(recordTimerRunnable)
+        videoRecorder.stop()
         alertManager.release()
         try {
             unregisterReceiver(usbReceiver)
