@@ -181,7 +181,7 @@ class InternalVideoRecorder(
                     thermalArea.set(area)
                 }
             }
-            displayMode == 0 -> {
+                       displayMode == 0 -> {
                 val splitX = (width * 0.7f).toInt()
                 thermalBmp?.let {
                     val area = RectF(0f, 0f, splitX.toFloat(), height.toFloat())
@@ -190,7 +190,7 @@ class InternalVideoRecorder(
                 }
                 opticalBmp?.let {
                     val area = RectF(splitX.toFloat(), 0f, width.toFloat(), height.toFloat())
-                    drawBitmapCrop(it, area, bitmapPaint)  // оптика — crop
+                    drawBitmapFit(it, area, bitmapPaint)  // <-- FIT, не CROP
                     opticalArea.set(area)
                 }
             }
