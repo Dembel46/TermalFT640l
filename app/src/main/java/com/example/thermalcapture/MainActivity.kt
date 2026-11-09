@@ -41,7 +41,6 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.herohan.uvcapp.CameraHelper
 import com.herohan.uvcapp.ICameraHelper
-import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import kotlin.math.atan2
 
@@ -88,6 +87,7 @@ class MainActivity : AppCompatActivity() {
 
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
 
+    // Режимы: 0 - 70/30, 1 - ТЕПЛО 100%, 2 - ОПТИКА 100%
     private var displayMode = 0
     private var isThermalFullscreen = false
     private var isHybridModeActive = false
@@ -114,6 +114,8 @@ class MainActivity : AppCompatActivity() {
                                 Toast.makeText(this@MainActivity, "UART подключен: " + serialController.connectedDeviceName, Toast.LENGTH_SHORT).show()
                             }
                         }
+                    } else {
+                        Toast.makeText(this@MainActivity, "Разрешение на доступ к UART отклонено", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -205,67 +207,86 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Диалоговое окно выбора подключенного USB-UART преобразователя
+     * Безопасный выбор UART устройства без вылетов
      */
     private fun showUartSelectionDialog() {
-        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-        val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
+        try {
+            val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+            val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
 
-        if (drivers.isEmpty()) {
-            val allUsbDevices = usbManager.deviceList.values.toList()
-            val msg = if (allUsbDevices.isEmpty()) {
-                "USB-устройства не обнаружены. Проверьте OTG-переходник и кабель."
-            } else {
-                val names = allUsbDevices.joinToString("\n") {
-                    String.format("%s (VID:%04X PID:%04X)", it.deviceName, it.vendorId, it.productId)
-                }
-                "COM-порт не распознан. Подключенные USB:\n$names"
-            }
-            AlertDialog.Builder(this)
-                .setTitle("Преобразователь UART")
-                .setMessage(msg)
-                .setPositiveButton("OK", null)
-                .show()
-            return
-        }
-
-        val items = Array(drivers.size) { i ->
-            val d = drivers[i].device
-            val friendly = serialController.getFriendlyName(d)
-            val hasPerm = if (usbManager.hasPermission(d)) "[Разрешено]" else "[Нужен доступ]"
-            String.format("%s %s (VID:%04X)", friendly, hasPerm, d.vendorId)
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Выберите UART преобразователь:")
-            .setItems(items) { _, which ->
-                val selectedDriver = drivers[which]
-                val device = selectedDriver.device
-
-                if (usbManager.hasPermission(device)) {
-                    if (serialController.connectWithDriver(this, selectedDriver)) {
-                        updateUartUiState(true, serialController.connectedDeviceName)
-                        Toast.makeText(this, "Подключено: " + serialController.connectedDeviceName + " (115200 8N1)", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(this, "Не удалось открыть порт", Toast.LENGTH_SHORT).show()
-                    }
+            if (drivers.isEmpty()) {
+                val allUsbDevices = usbManager.deviceList.values.toList()
+                val msg = if (allUsbDevices.isEmpty()) {
+                    "USB-устройства не обнаружены. Проверьте OTG-переходник и кабель."
                 } else {
-                    requestUsbPermission(device)
+                    val names = allUsbDevices.joinToString("\n") {
+                        String.format("%s (VID:%04X PID:%04X)", it.deviceName, it.vendorId, it.productId)
+                    }
+                    "Преобразователь не распознан. Найденные USB-устройства:\n$names"
                 }
+                AlertDialog.Builder(this)
+                    .setTitle("Преобразователь UART")
+                    .setMessage(msg)
+                    .setPositiveButton("OK", null)
+                    .show()
+                return
             }
-            .setNegativeButton("Отмена", null)
-            .show()
+
+            val items = Array(drivers.size) { i ->
+                val d = drivers[i].device
+                val friendly = serialController.getFriendlyName(d)
+                val hasPerm = if (usbManager.hasPermission(d)) "[Доступ есть]" else "[Запросить доступ]"
+                String.format("%s %s (VID:%04X)", friendly, hasPerm, d.vendorId)
+            }
+
+            AlertDialog.Builder(this)
+                .setTitle("Выберите UART преобразователь:")
+                .setItems(items) { _, which ->
+                    try {
+                        val selectedDriver = drivers[which]
+                        val device = selectedDriver.device
+
+                        if (usbManager.hasPermission(device)) {
+                            if (serialController.connectWithDriver(this, selectedDriver)) {
+                                updateUartUiState(true, serialController.connectedDeviceName)
+                                Toast.makeText(this, "Подключено: " + serialController.connectedDeviceName + " (115200 8N1)", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(this, "Не удалось открыть порт", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            requestUsbPermission(device)
+                        }
+                    } catch (t: Throwable) {
+                        Toast.makeText(this, "Ошибка подключения: " + t.localizedMessage, Toast.LENGTH_LONG).show()
+                    }
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+        } catch (t: Throwable) {
+            Toast.makeText(this, "Ошибка сканирования USB: " + t.localizedMessage, Toast.LENGTH_SHORT).show()
+        }
     }
 
+    /**
+     * Запрос разрешений с обязательной совместимостью с Android 14 (API 34)
+     */
     private fun requestUsbPermission(device: UsbDevice) {
-        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
+        try {
+            val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+            // КРИТИЧЕСКИ ВАЖНО ДЛЯ ANDROID 14: явное указание пакета приложения
+            val intent = Intent(actionUsbPermission).apply {
+                setPackage(packageName)
+            }
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val permissionIntent = PendingIntent.getBroadcast(this, 0, intent, flags)
+            usbManager.requestPermission(device, permissionIntent)
+        } catch (t: Throwable) {
+            Toast.makeText(this, "Ошибка запроса доступа: " + t.localizedMessage, Toast.LENGTH_LONG).show()
         }
-        val permissionIntent = PendingIntent.getBroadcast(this, 0, Intent(actionUsbPermission), flags)
-        usbManager.requestPermission(device, permissionIntent)
     }
 
     private fun initVisionPipeline() {
@@ -309,7 +330,7 @@ class MainActivity : AppCompatActivity() {
         isProcessingFrame = true
         visionHandler.post {
             try {
-                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp) else emptyList()
+                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp, true) else emptyList()
                 bmp.recycle()
 
                 val hasMotion = targets.any { it.type == TargetType.MOVING }
@@ -460,7 +481,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
-        // Кнопка выбора и подключения UART адаптера
         btnUartSelect.setOnClickListener {
             showUartSelectionDialog()
         }
@@ -859,7 +879,7 @@ class MainActivity : AppCompatActivity() {
         alertManager.release()
         try {
             unregisterReceiver(usbReceiver)
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
         serialController.disconnect()
         thermalSurface?.release()
         cameraHelper?.release()
