@@ -223,12 +223,8 @@ class MainActivity : AppCompatActivity() {
                 override fun getOpticalRotationDegrees(): Int {
                     // PreviewView ориентирован по экрану; mp4 пишем landscape 1280x720.
                     // Поворот нужен, если сенсор "боком" относительно экрана.
-                    val rotation = phoneCameraView.display?.rotation ?: 0
-                    return when (rotation) {
-                        Surface.ROTATION_90 -> 90
-                        Surface.ROTATION_180 -> 180
-                        Surface.ROTATION_270 -> 270
-                        else -> 0
+                    
+                    return 90
                     }
                 }
                 override fun onRecordingStateChanged(recording: Boolean) {
