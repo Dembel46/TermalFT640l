@@ -622,7 +622,6 @@ class MainActivity : AppCompatActivity() {
             crosshairOverlay.invalidate()
         }
 
-        // Простой циклический зум 0x..3x
         btnZoom.setOnClickListener {
             currentZoomIndex = (currentZoomIndex + 1) % 4
             val zoomFactor = when (currentZoomIndex) {
@@ -642,9 +641,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Меню настроек (Шестеренка ⚙)
-     */
     private fun showSettingsDialog() {
         val soundState = if (alertManager.isSoundEnabled) "ВКЛ" else "ВЫКЛ"
         val flashState = if (alertManager.isFlashEnabled) "ВКЛ" else "ВЫКЛ"
@@ -687,9 +683,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Диалог краткого описания и инструкции (ⓘ)
-     */
     private fun showHelpManualDialog() {
         val message = """
             ТЕПЛОВИЗИОННЫЙ ПРИЦЕЛЬНЫЙ КОМПЛЕКС FT640L
@@ -715,7 +708,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(40, 20, 40, 20)
             addView(TextView(this@MainActivity).apply {
                 text = message
-                textSize = 12sp
+                textSize = 12f
                 setTextColor(0xFFDDDDDD.toInt())
                 setLineSpacing(0f, 1.25f)
             })
@@ -728,9 +721,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Проверка и запрос выбора папки сохранения при первом старте
-     */
     private fun ensureStorageConfigured(onReady: () -> Unit) {
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         val location = prefs.getString("storage_location", null)
