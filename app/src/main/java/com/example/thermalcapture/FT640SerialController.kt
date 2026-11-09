@@ -13,7 +13,7 @@ class FT640SerialController {
         private set
 
     /**
-     * Поиск и подключение к USB-UART адаптеру на скорости 115200 8N1
+     * Безопасное подключение к USB-UART адаптеру (CH340, CP2102, FTDI) на 115200 8N1
      */
     fun connect(context: Context, device: UsbDevice? = null): Boolean {
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -30,10 +30,14 @@ class FT640SerialController {
             availableDrivers[0]
         }
 
-        val connection = usbManager.openDevice(driver.device) ?: return false
-        val port = driver.ports[0]
-
         try {
+            if (!usbManager.hasPermission(driver.device)) {
+                return false
+            }
+
+            val connection = usbManager.openDevice(driver.device) ?: return false
+            val port = driver.ports[0]
+
             port.open(connection)
             port.setParameters(115200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
             serialPort = port
@@ -85,25 +89,15 @@ class FT640SerialController {
         } catch (e: Exception) {}
     }
 
-    /**
-     * 1. Переключение палитры ядра (Команда 0x42)
-     */
     fun setPalette(paletteCode: Int) {
         sendCommand(0x01, 0x42, 0x01, byteArrayOf(paletteCode.toByte()))
     }
 
-    /**
-     * 2. Переключение авто-контраста AGC ядра (Команда 0x1F)
-     * 0x01 - Auto, 0x00 - Manual
-     */
     fun setAutoContrast(isAuto: Boolean) {
         val mode = if (isAuto) 0x01 else 0x00
         sendCommand(0x01, 0x1F, 0x01, byteArrayOf(mode.toByte()))
     }
 
-    /**
-     * 3. Аппаратный электронный зум ядра 640x512 (Команда 0x40)
-     */
     fun setElectronicZoom(zoomFactor: Float) {
         val z = zoomFactor.coerceIn(1.0f, 4.0f)
         val fullW = 640
@@ -126,9 +120,6 @@ class FT640SerialController {
         sendCommand(0x01, 0x40, 0x02, params)
     }
 
-    /**
-     * 4. Калибровка шторки матрицы (NUC / Shutter, Команда 0x02)
-     */
     fun triggerShutter() {
         sendCommand(0x01, 0x02, 0x02, byteArrayOf(0x01, 0x01))
     }
