@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbConstants
@@ -206,9 +207,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Безопасный выбор UART устройства без вылетов
-     */
     private fun showUartSelectionDialog() {
         try {
             val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
@@ -267,13 +265,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Запрос разрешений с обязательной совместимостью с Android 14 (API 34)
-     */
     private fun requestUsbPermission(device: UsbDevice) {
         try {
             val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-            // КРИТИЧЕСКИ ВАЖНО ДЛЯ ANDROID 14: явное указание пакета приложения
             val intent = Intent(actionUsbPermission).apply {
                 setPackage(packageName)
             }
@@ -309,7 +303,7 @@ class MainActivity : AppCompatActivity() {
                             } else {
                                 isProcessingFrame = false
                             }
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
                             isProcessingFrame = false
                         }
                     } else {
@@ -330,7 +324,8 @@ class MainActivity : AppCompatActivity() {
         isProcessingFrame = true
         visionHandler.post {
             try {
-                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp, true) else emptyList()
+                // Исправлено: передается только 1 аргумент bmp
+                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp) else emptyList()
                 bmp.recycle()
 
                 val hasMotion = targets.any { it.type == TargetType.MOVING }
@@ -351,7 +346,7 @@ class MainActivity : AppCompatActivity() {
                         tvStatus.text = "Поиск целей: АКТИВЕН"
                     }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
             } finally {
                 isProcessingFrame = false
             }
@@ -879,7 +874,7 @@ class MainActivity : AppCompatActivity() {
         alertManager.release()
         try {
             unregisterReceiver(usbReceiver)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {}
         serialController.disconnect()
         thermalSurface?.release()
         cameraHelper?.release()
