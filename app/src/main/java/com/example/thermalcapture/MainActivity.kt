@@ -231,7 +231,7 @@ class MainActivity : AppCompatActivity() {
                 width = 1280,
                 height = 720,
                 frameRate = 20,
-                opticalRotationDegrees = 90   // поворот только слоя оптики
+                opticalRotationDegrees = 270  // поворот только слоя оптики
             ),
             object : RecordingController.Ui {
                 override val thermalView: TextureView? get() = cameraView
