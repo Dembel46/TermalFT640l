@@ -31,14 +31,13 @@ class RecordingController(
         fun getOpticalOffsetNorm(): Pair<Float, Float>
         fun getDetectedTargets(): List<DetectedTarget>
         fun getOpticalRotationDegrees(): Int
-        fun getThermalRotationDegrees(): Int
         fun onRecordingStateChanged(recording: Boolean)
         fun onRecordingTick(durationSec: Int)
         fun onRecordingError(message: String)
     }
 
     companion object {
-        private const val FRAME_INTERVAL_MS = 50L   // 20 FPS
+        private const val FRAME_INTERVAL_MS = 50L
         private const val LOOP_SEGMENT_SEC = 180
     }
 
@@ -52,7 +51,6 @@ class RecordingController(
     private val srcRect = Rect()
     private val dstRect = Rect(0, 0, opticalBmp.width, opticalBmp.height)
 
-    // Кэши последних удачных кадров — чтобы не было «чёрных» кадров
     private var lastOpticalFrame: Bitmap? = null
     private var lastThermalFrame: Bitmap? = null
 
@@ -135,7 +133,6 @@ class RecordingController(
             val thermalView = ui.thermalView
             val opticalView = ui.opticalView
 
-            // ---- Тепловизор: свежий кадр или последний удачный ----
             var freshThermal: Bitmap? = null
             if (ui.isThermalStreaming() && thermalView != null && thermalView.isAvailable) {
                 try {
@@ -145,7 +142,6 @@ class RecordingController(
             if (freshThermal != null) lastThermalFrame = freshThermal
             val tBmp: Bitmap? = freshThermal ?: lastThermalFrame
 
-            // ---- Оптика: свежий кадр или последний удачный ----
             var freshOptical: Bitmap? = null
             if (opticalView != null && opticalView.visibility == View.VISIBLE) {
                 val ref = AtomicReference<Bitmap?>(null)
@@ -183,7 +179,7 @@ class RecordingController(
                 opticalOffsetNormY = optNormY,
                 targets = ui.getDetectedTargets(),
                 opticalRotationDegrees = ui.getOpticalRotationDegrees(),
-                thermalRotationDegrees = ui.getThermalRotationDegrees()
+                thermalRotationDegrees = 0   // без поворота тепловизора
             )
 
             captureHandler?.postDelayed(this, FRAME_INTERVAL_MS)
