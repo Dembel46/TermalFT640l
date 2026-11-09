@@ -16,7 +16,7 @@ class FT640SerialController {
         private set
 
     /**
-     * Подключение к выбранному драйверу USB-UART
+     * Безопасное подключение к выбранному драйверу USB-UART
      */
     fun connectWithDriver(context: Context, driver: UsbSerialDriver): Boolean {
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -27,15 +27,16 @@ class FT640SerialController {
             }
 
             val connection = usbManager.openDevice(driver.device) ?: return false
-            val port = driver.ports[0]
+            if (driver.ports.isEmpty()) return false
 
+            val port = driver.ports[0]
             port.open(connection)
             port.setParameters(115200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
             serialPort = port
             isConnected = true
             connectedDeviceName = getFriendlyName(driver.device)
             return true
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             disconnect()
             return false
         }
@@ -62,7 +63,7 @@ class FT640SerialController {
     fun disconnect() {
         try {
             serialPort?.close()
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
         serialPort = null
         isConnected = false
         connectedDeviceName = ""
@@ -105,7 +106,7 @@ class FT640SerialController {
 
         try {
             serialPort?.write(packet, 500)
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
     }
 
     fun setPalette(paletteCode: Int) {
