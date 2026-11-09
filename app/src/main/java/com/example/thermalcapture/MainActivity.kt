@@ -54,8 +54,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnCalibrate: Button
     private lateinit var btnTracking: Button
     private lateinit var btnPhoto: Button
-    private lateinit var btnRecord: RecordButtonView      // <-- кастомная View
-    private lateinit var btnThermalRotate: Button
+    private lateinit var btnRecord: Button
     private lateinit var btnSettings: Button
     private lateinit var btnThermalFullscreen: Button
     private lateinit var btnHybrid: Button
@@ -92,11 +91,6 @@ class MainActivity : AppCompatActivity() {
     private var thermalAspectW = 4
     private var thermalAspectH = 3
 
-    private var thermalRotationIndex = 0
-    private val rotationAngles = intArrayOf(0, 90, 180, 270)
-    private val thermalRotationDegrees: Int
-        get() = rotationAngles[thermalRotationIndex]
-
     private val sidebarHandler = Handler(Looper.getMainLooper())
     private val hideSidebarRunnable = Runnable { collapseSidebar() }
 
@@ -121,9 +115,6 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
-        thermalRotationIndex = prefs.getInt("thermalRotationIndex", 0).coerceIn(0, 3)
-        applyThermalRotation()
-
         crosshairOverlay.onHybridAlphaChanged = { alpha ->
             if (isHybridModeActive) cameraView.alpha = alpha
         }
@@ -174,8 +165,7 @@ class MainActivity : AppCompatActivity() {
         btnCalibrate = findViewById(R.id.btnCalibrate)
         btnTracking = findViewById(R.id.btnTracking)
         btnPhoto = findViewById(R.id.btnPhoto)
-        btnRecord = findViewById(R.id.btnRecordCenter)
-        btnThermalRotate = findViewById(R.id.btnThermalRotate)
+        btnRecord = findViewById(R.id.btnRecord)
         btnSettings = findViewById(R.id.btnSettings)
         btnThermalFullscreen = findViewById(R.id.btnThermalFullscreen)
         btnHybrid = findViewById(R.id.btnHybrid)
@@ -193,7 +183,6 @@ class MainActivity : AppCompatActivity() {
                         thermalSurface?.let { if (it.isValid) cameraController.addSurface(it) }
                     }
                 }
-
                 override fun onSerialDeviceAttached(device: UsbDevice) {
                     if (serialController.connect(this@MainActivity, device)) {
                         Toast.makeText(this@MainActivity,
@@ -237,11 +226,7 @@ class MainActivity : AppCompatActivity() {
                 override fun getDetectedTargets(): List<DetectedTarget> =
                     crosshairOverlay.detectedTargets
 
-                // Проверено на вашем устройстве: 0 — правильная ориентация оптики
-                override fun getOpticalRotationDegrees(): Int = 0
-
-                override fun getThermalRotationDegrees(): Int =
-                    this@MainActivity.thermalRotationDegrees
+                override fun getOpticalRotationDegrees(): Int = 0   // <-- правильная ориентация
 
                 override fun onRecordingStateChanged(recording: Boolean) {
                     isRecording = recording
@@ -317,19 +302,6 @@ class MainActivity : AppCompatActivity() {
         btnCalibrate.setOnClickListener { resetSidebarTimer(); toggleCalibration() }
         btnZoom.setOnClickListener { resetSidebarTimer(); cycleZoom() }
         btnContrastType.setOnClickListener { resetSidebarTimer(); settingsDialogs.showPaletteDialog() }
-
-        btnThermalRotate.setOnClickListener {
-            thermalRotationIndex = (thermalRotationIndex + 1) % 4
-            applyThermalRotation()
-            getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
-                .edit().putInt("thermalRotationIndex", thermalRotationIndex).apply()
-            Toast.makeText(this, "Тепловизор: ${thermalRotationDegrees}°", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun applyThermalRotation() {
-        cameraView.rotation = thermalRotationDegrees.toFloat()
-        rootLayout.post { updateOverlayBounds() }
     }
 
     private fun initVisionPipeline() {
@@ -632,16 +604,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateRecordUiState() {
-        // Кнопка: красный квадрат (idle) / красный круг (recording)
-        btnRecord.isRecording = isRecording
-
         if (isRecording) {
-            // Индикатор режима — красный при записи
-            tvRecordIndicator.setBackgroundColor(0xCC990000.toInt())
+            btnRecord.text = "СТОП ⏹"
+            btnRecord.setBackgroundColor(0xFF00C853.toInt())
             tvRecordIndicator.visibility = View.VISIBLE
         } else {
-            // Индикатор режима — серый в покое
-            tvRecordIndicator.setBackgroundColor(0xCC333333.toInt())
+            btnRecord.text = "ЗАПИСЬ ⏺"
+            btnRecord.setBackgroundColor(0xFFB71C1C.toInt())
             val label = if (recordingController.isLoopRecording) "ЦИКЛ (3м)" else "НЕПРЕРЫВ"
             tvRecordIndicator.text = "РЕЖИМ: $label"
             tvRecordIndicator.visibility = View.VISIBLE
