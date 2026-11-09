@@ -56,7 +56,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- ВЕРХНЯЯ ЛЕВАЯ ПАНЕЛЬ: Кнопка полноэкранного режима и статус -->
+    <!-- ВЕРХНЯЯ ЛЕВАЯ ПАНЕЛЬ: Кнопка "Во весь экран" и статус -->
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -89,7 +89,6 @@
             android:textColor="#00FF00"
             android:textSize="11sp" />
 
-        <!-- Индикатор статуса видеозаписи (REC) -->
         <TextView
             android:id="@+id/tvRecordIndicator"
             android:layout_width="wrap_content"
@@ -119,7 +118,7 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- ЛЕВЫЙ ВЫДВИЖНОЙ БАР (SIDEBAR) -->
+    <!-- ЛЕВЫЙ ВЫДВИЖНОЙ БАР (Автоскрытие через 7 сек) -->
     <LinearLayout
         android:id="@+id/leftSidebar"
         android:layout_width="wrap_content"
@@ -129,7 +128,6 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
-        <!-- Контейнер кнопок бара -->
         <LinearLayout
             android:id="@+id/sidebarContent"
             android:layout_width="wrap_content"
@@ -182,24 +180,12 @@
                 android:id="@+id/btnRecord"
                 android:layout_width="100dp"
                 android:layout_height="36dp"
-                android:layout_marginBottom="4dp"
                 android:backgroundTint="#B71C1C"
                 android:text="ЗАПИСЬ ⏺"
                 android:textColor="#FFFFFF"
                 android:textSize="10sp" />
-
-            <!-- Кнопка повторного опроса USB устройств -->
-            <Button
-                android:id="@+id/btnRescanUsb"
-                android:layout_width="100dp"
-                android:layout_height="36dp"
-                android:backgroundTint="#2E7D32"
-                android:text="ОПРОС USB ⟳"
-                android:textColor="#FFFFFF"
-                android:textSize="9sp" />
         </LinearLayout>
 
-        <!-- Ярлычок скрытия/открытия панели -->
         <Button
             android:id="@+id/btnToggleSidebar"
             android:layout_width="26dp"
