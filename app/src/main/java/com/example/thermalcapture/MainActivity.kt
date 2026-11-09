@@ -54,7 +54,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnCalibrate: Button
     private lateinit var btnTracking: Button
     private lateinit var btnPhoto: Button
-    private lateinit var btnRecord: Button          // теперь это btnRecordCenter
+    private lateinit var btnRecord: Button
     private lateinit var btnThermalRotate: Button
     private lateinit var btnSettings: Button
     private lateinit var btnThermalFullscreen: Button
@@ -92,7 +92,7 @@ class MainActivity : AppCompatActivity() {
     private var thermalAspectW = 4
     private var thermalAspectH = 3
 
-    // Поворот тепловизора (0/90/180/270)
+    // Поворот тепловизора: 0 / 90 / 180 / 270
     private var thermalRotationIndex = 0
     private val rotationAngles = intArrayOf(0, 90, 180, 270)
     private val thermalRotationDegrees: Int
@@ -175,7 +175,7 @@ class MainActivity : AppCompatActivity() {
         btnCalibrate = findViewById(R.id.btnCalibrate)
         btnTracking = findViewById(R.id.btnTracking)
         btnPhoto = findViewById(R.id.btnPhoto)
-        btnRecord = findViewById(R.id.btnRecordCenter)   // <-- новая кнопка
+        btnRecord = findViewById(R.id.btnRecordCenter)
         btnThermalRotate = findViewById(R.id.btnThermalRotate)
         btnSettings = findViewById(R.id.btnSettings)
         btnThermalFullscreen = findViewById(R.id.btnThermalFullscreen)
@@ -217,8 +217,6 @@ class MainActivity : AppCompatActivity() {
                 override fun onRequestUsbPermission(device: UsbDevice) { requestUsbPermission(device) }
             })
 
-        // ВАЖНО: у InternalVideoRecorder больше нет параметра opticalRotationDegrees —
-        // углы передаются в queueFrame через RecordingController.Ui
         recordingController = RecordingController(this, storageManager,
             InternalVideoRecorder(width = 1280, height = 720, frameRate = 20),
             object : RecordingController.Ui {
@@ -242,7 +240,8 @@ class MainActivity : AppCompatActivity() {
 
                 override fun getOpticalRotationDegrees(): Int = 90
 
-                override fun getThermalRotationDegrees(): Int = this@MainActivity.thermalRotationDegrees
+                override fun getThermalRotationDegrees(): Int =
+                    this@MainActivity.thermalRotationDegrees
 
                 override fun onRecordingStateChanged(recording: Boolean) {
                     isRecording = recording
@@ -328,10 +327,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Применяет визуальный поворот TextureView тепловизора. */
     private fun applyThermalRotation() {
         cameraView.rotation = thermalRotationDegrees.toFloat()
-        // После поворота надо пересчитать видимые границы (CrosshairView)
         rootLayout.post { updateOverlayBounds() }
     }
 
