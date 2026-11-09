@@ -8,17 +8,6 @@ import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
 
-/**
- * Кнопка записи:
- *  - Idle:       чёрный круг + белая обводка + красный скруглённый квадрат.
- *  - Recording:  чёрный круг + белая обводка + красный круг внутри
- *                (круг меньше внешнего, не доходит до обводки).
- *
- * Использование:
- *   view.isRecording = true / false
- *   view.setOnClickListener { ... }
- *   view.setOnLongClickListener { ... }
- */
 class RecordButtonView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -34,7 +23,7 @@ class RecordButtonView @JvmOverloads constructor(
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
-        strokeWidth = 4f * density
+        strokeWidth = 3f * density
     }
     private val innerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#E53935")
@@ -66,16 +55,12 @@ class RecordButtonView @JvmOverloads constructor(
         val squareHalf = outerRadius * 0.5f
         val corner = 6f * density
 
-        // Внешний чёрный круг
         canvas.drawCircle(cx, cy, outerRadius, outerPaint)
-        // Белая обводка
         canvas.drawCircle(cx, cy, outerRadius, ringPaint)
 
         if (isRecording) {
-            // Красный круг внутри, не доходит до обводки
             canvas.drawCircle(cx, cy, innerCircleRadius, innerPaint)
         } else {
-            // Красный скруглённый квадрат внутри
             rectF.set(cx - squareHalf, cy - squareHalf, cx + squareHalf, cy + squareHalf)
             canvas.drawRoundRect(rectF, corner, corner, innerPaint)
         }
