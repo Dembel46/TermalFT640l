@@ -39,7 +39,6 @@ class MainActivity : AppCompatActivity() {
 
     private val actionUsbPermission = "com.example.thermalcapture.USB_SERIAL_PERMISSION"
 
-    // ---------- Views ----------
     private lateinit var rootLayout: ConstraintLayout
     private lateinit var cameraContainer: FrameLayout
     private lateinit var thermalContainer: FrameLayout
@@ -55,14 +54,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnCalibrate: Button
     private lateinit var btnTracking: Button
     private lateinit var btnPhoto: Button
-    private lateinit var btnRecord: Button
+    private lateinit var btnRecord: Button          // теперь это btnRecordCenter
+    private lateinit var btnThermalRotate: Button
     private lateinit var btnSettings: Button
     private lateinit var btnThermalFullscreen: Button
     private lateinit var btnHybrid: Button
     private lateinit var btnZoom: Button
     private lateinit var btnContrastType: Button
 
-    // ---------- Controllers ----------
     private lateinit var storageManager: StorageManager
     private lateinit var settingsDialogs: SettingsDialogs
     private lateinit var cameraController: CameraController
@@ -70,7 +69,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var batteryStatus: BatteryStatusView
     private lateinit var alertManager: AlertManager
 
-    // ---------- Serial / Vision ----------
     private val serialController = FT640SerialController()
     private val visionEngine = ThermalVisionEngine()
 
@@ -86,7 +84,6 @@ class MainActivity : AppCompatActivity() {
 
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
 
-    // ---------- UI state ----------
     private var displayMode = 1
     private var isThermalFullscreen = true
     private var isHybridModeActive = false
@@ -94,6 +91,12 @@ class MainActivity : AppCompatActivity() {
     private var currentZoomIndex = 0
     private var thermalAspectW = 4
     private var thermalAspectH = 3
+
+    // Поворот тепловизора (0/90/180/270)
+    private var thermalRotationIndex = 0
+    private val rotationAngles = intArrayOf(0, 90, 180, 270)
+    private val thermalRotationDegrees: Int
+        get() = rotationAngles[thermalRotationIndex]
 
     private val sidebarHandler = Handler(Looper.getMainLooper())
     private val hideSidebarRunnable = Runnable { collapseSidebar() }
@@ -103,10 +106,6 @@ class MainActivity : AppCompatActivity() {
 
     private var lastStatusMessage = "Ожидание подключения..."
     private var lastBatteryText = ""
-
-    // ================================================================
-    // Жизненный цикл
-    // ================================================================
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -123,6 +122,9 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
         crosshairOverlay.opticalOffsetX = prefs.getFloat("opticalOffsetX", 0f)
         crosshairOverlay.opticalOffsetY = prefs.getFloat("opticalOffsetY", 0f)
+        thermalRotationIndex = prefs.getInt("thermalRotationIndex", 0).coerceIn(0, 3)
+        applyThermalRotation()
+
         crosshairOverlay.onHybridAlphaChanged = { alpha ->
             if (isHybridModeActive) cameraView.alpha = alpha
         }
@@ -157,10 +159,6 @@ class MainActivity : AppCompatActivity() {
         cameraController.release()
     }
 
-    // ================================================================
-    // Инициализация
-    // ================================================================
-
     private fun bindViews() {
         rootLayout = findViewById(R.id.rootLayout)
         cameraContainer = findViewById(R.id.cameraContainer)
@@ -177,7 +175,8 @@ class MainActivity : AppCompatActivity() {
         btnCalibrate = findViewById(R.id.btnCalibrate)
         btnTracking = findViewById(R.id.btnTracking)
         btnPhoto = findViewById(R.id.btnPhoto)
-        btnRecord = findViewById(R.id.btnRecord)
+        btnRecord = findViewById(R.id.btnRecordCenter)   // <-- новая кнопка
+        btnThermalRotate = findViewById(R.id.btnThermalRotate)
         btnSettings = findViewById(R.id.btnSettings)
         btnThermalFullscreen = findViewById(R.id.btnThermalFullscreen)
         btnHybrid = findViewById(R.id.btnHybrid)
@@ -186,7 +185,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initControllers() {
-        // ---- CameraController ----
         cameraController = CameraController(this, this, phoneCameraView,
             object : CameraController.Callbacks {
                 override fun onThermalStreamingChanged(active: Boolean, message: String) {
@@ -205,34 +203,24 @@ class MainActivity : AppCompatActivity() {
                 }
             })
 
-        // ---- SettingsDialogs ----
         settingsDialogs = SettingsDialogs(this, alertManager, storageManager, serialController,
             object : SettingsDialogs.Callbacks {
                 override fun onAspectRatioChanged(w: Int, h: Int) {
-                    thermalAspectW = w
-                    thermalAspectH = h
+                    thermalAspectW = w; thermalAspectH = h
                     rootLayout.post { updateOverlayBounds() }
                 }
-
                 override fun onPaletteChanged(code: Int, shortName: String) {
                     btnContrastType.text = "КОНТРАСТ: $shortName"
                 }
-
                 override fun onRescanUsb() { rescanUsb() }
-
                 override fun onStorageConfiguredThen(action: (() -> Unit)?) { action?.invoke() }
-
                 override fun onRequestUsbPermission(device: UsbDevice) { requestUsbPermission(device) }
             })
 
-        // ---- RecordingController ----
+        // ВАЖНО: у InternalVideoRecorder больше нет параметра opticalRotationDegrees —
+        // углы передаются в queueFrame через RecordingController.Ui
         recordingController = RecordingController(this, storageManager,
-            InternalVideoRecorder(
-                width = 1280,
-                height = 720,
-                frameRate = 20,
-                opticalRotationDegrees = 270  // поворот только слоя оптики
-            ),
+            InternalVideoRecorder(width = 1280, height = 720, frameRate = 20),
             object : RecordingController.Ui {
                 override val thermalView: TextureView? get() = cameraView
                 override val opticalView: PreviewView? get() = phoneCameraView
@@ -251,6 +239,10 @@ class MainActivity : AppCompatActivity() {
 
                 override fun getDetectedTargets(): List<DetectedTarget> =
                     crosshairOverlay.detectedTargets
+
+                override fun getOpticalRotationDegrees(): Int = 90
+
+                override fun getThermalRotationDegrees(): Int = this@MainActivity.thermalRotationDegrees
 
                 override fun onRecordingStateChanged(recording: Boolean) {
                     isRecording = recording
@@ -271,18 +263,11 @@ class MainActivity : AppCompatActivity() {
                 }
             })
 
-        // ---- BatteryStatusView ----
         batteryStatus = BatteryStatusView(this).apply {
-            onStatusChanged = { text ->
-                runOnUiThread { updateStatusBar(text) }
-            }
+            onStatusChanged = { text -> runOnUiThread { updateStatusBar(text) } }
             start()
         }
     }
-
-    // ================================================================
-    // Статус-бар
-    // ================================================================
 
     private fun updateStatusBar(batteryText: String) {
         lastBatteryText = batteryText
@@ -293,10 +278,6 @@ class MainActivity : AppCompatActivity() {
         lastStatusMessage = msg
         updateStatusBar(lastBatteryText)
     }
-
-    // ================================================================
-    // Views / Buttons
-    // ================================================================
 
     private fun initViews() {
         cameraView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
@@ -337,11 +318,22 @@ class MainActivity : AppCompatActivity() {
         btnCalibrate.setOnClickListener { resetSidebarTimer(); toggleCalibration() }
         btnZoom.setOnClickListener { resetSidebarTimer(); cycleZoom() }
         btnContrastType.setOnClickListener { resetSidebarTimer(); settingsDialogs.showPaletteDialog() }
+
+        btnThermalRotate.setOnClickListener {
+            thermalRotationIndex = (thermalRotationIndex + 1) % 4
+            applyThermalRotation()
+            getSharedPreferences("ThermalCapturePrefs", Context.MODE_PRIVATE)
+                .edit().putInt("thermalRotationIndex", thermalRotationIndex).apply()
+            Toast.makeText(this, "Тепловизор: ${thermalRotationDegrees}°", Toast.LENGTH_SHORT).show()
+        }
     }
 
-    // ================================================================
-    // Vision pipeline
-    // ================================================================
+    /** Применяет визуальный поворот TextureView тепловизора. */
+    private fun applyThermalRotation() {
+        cameraView.rotation = thermalRotationDegrees.toFloat()
+        // После поворота надо пересчитать видимые границы (CrosshairView)
+        rootLayout.post { updateOverlayBounds() }
+    }
 
     private fun initVisionPipeline() {
         visionThread = HandlerThread("VisionProcessingThread").apply { start() }
@@ -403,10 +395,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ================================================================
-    // Permissions / Cameras
-    // ================================================================
-
     private fun checkPermissionsAndInit() {
         val needed = mutableListOf(Manifest.permission.CAMERA)
         val missing = needed.filter {
@@ -431,10 +419,6 @@ class MainActivity : AppCompatActivity() {
         cameraController.startPhoneCamera()
         cameraController.initThermalCamera()
     }
-
-    // ================================================================
-    // Overlay / Layout
-    // ================================================================
 
     private fun updateOverlayBounds() {
         adjustThermalViewBounds()
@@ -513,10 +497,6 @@ class MainActivity : AppCompatActivity() {
         btnToggleSidebar.text = "◀"
         resetSidebarTimer()
     }
-
-    // ================================================================
-    // Buttons
-    // ================================================================
 
     private fun toggleHybrid() {
         isHybridModeActive = !isHybridModeActive
@@ -612,10 +592,6 @@ class MainActivity : AppCompatActivity() {
         serialController.setElectronicZoom(zoom)
     }
 
-    // ================================================================
-    // Recording
-    // ================================================================
-
     private fun toggleRecording() {
         if (!isRecording) recordingController.start() else recordingController.stop()
     }
@@ -660,21 +636,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateRecordUiState() {
         if (isRecording) {
-            btnRecord.text = "СТОП ⏹"
+            btnRecord.text = "⏹"
             btnRecord.setBackgroundColor(0xFF00C853.toInt())
             tvRecordIndicator.visibility = View.VISIBLE
         } else {
-            btnRecord.text = "ЗАПИСЬ ⏺"
+            btnRecord.text = "⏺"
             btnRecord.setBackgroundColor(0xFFB71C1C.toInt())
             val label = if (recordingController.isLoopRecording) "ЦИКЛ (3м)" else "НЕПРЕРЫВ"
             tvRecordIndicator.text = "РЕЖИМ: $label"
             tvRecordIndicator.visibility = View.VISIBLE
         }
     }
-
-    // ================================================================
-    // Layout modes
-    // ================================================================
 
     private fun applyHybridMode() {
         val lpO = opticalContainer.layoutParams as FrameLayout.LayoutParams
@@ -737,10 +709,6 @@ class MainActivity : AppCompatActivity() {
         cameraContainer.requestLayout()
         rootLayout.post { updateOverlayBounds() }
     }
-
-    // ================================================================
-    // USB
-    // ================================================================
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
