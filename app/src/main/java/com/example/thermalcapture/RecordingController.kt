@@ -30,6 +30,8 @@ class RecordingController(
         fun getHybridAlpha(): Float
         fun getOpticalOffsetNorm(): Pair<Float, Float>
         fun getDetectedTargets(): List<DetectedTarget>
+        fun getOpticalRotationDegrees(): Int
+        fun getThermalRotationDegrees(): Int
         fun onRecordingStateChanged(recording: Boolean)
         fun onRecordingTick(durationSec: Int)
         fun onRecordingError(message: String)
@@ -50,7 +52,6 @@ class RecordingController(
     private val srcRect = Rect()
     private val dstRect = Rect(0, 0, opticalBmp.width, opticalBmp.height)
 
-    // Кэш последнего успешного кадра оптики — чтобы не промаргивало
     private var lastOpticalFrame: Bitmap? = null
 
     @Volatile private var isRecording = false
@@ -105,83 +106,3 @@ class RecordingController(
         videoRecorder.stop {
             mainHandler.post { oldFile?.let { storageManager.exportVideo(it) } }
         }
-        currentFile = storageManager.makeTempMovieFile()
-        val file = currentFile ?: run { stop(); return }
-        if (!videoRecorder.start(file)) {
-            ui.onRecordingError("Не удалось перезапустить запись")
-            stop()
-            return
-        }
-        durationSec = 0
-    }
-
-    private val frameLoop = object : Runnable {
-        override fun run() {
-            if (!isRecording) return
-
-            val now = SystemClock.uptimeMillis()
-            if (isLoopMode && durationSec >= LOOP_SEGMENT_SEC) restartSegment()
-            if (now >= nextTickMs) {
-                durationSec++
-                nextTickMs = now + 1000L
-                mainHandler.post { ui.onRecordingTick(durationSec) }
-            }
-
-            val thermalView = ui.thermalView
-            val opticalView = ui.opticalView
-
-            // Тепловизор — getBitmap(Bitmap) возвращает Bitmap? (null если не готов)
-            val tBmp: Bitmap? = if (ui.isThermalStreaming() && thermalView != null && thermalView.isAvailable) {
-                try {
-                    if (thermalView.getBitmap(thermalBmp) != null) thermalBmp else null
-                } catch (_: Exception) { null }
-            } else null
-
-            // Оптика: берём каждый кадр, но с fallback на последний успешный
-            var freshOptical: Bitmap? = null
-            if (opticalView != null && opticalView.visibility == View.VISIBLE) {
-                val ref = AtomicReference<Bitmap?>(null)
-                val done = Object()
-                mainHandler.post {
-                    try {
-                        val b = opticalView.bitmap
-                        if (b != null) {
-                            srcRect.set(0, 0, b.width, b.height)
-                            opticalCanvas.drawBitmap(b, srcRect, dstRect, null)
-                            ref.set(opticalBmp)
-                        }
-                    } catch (_: Exception) {
-                    } finally {
-                        synchronized(done) { done.notifyAll() }
-                    }
-                }
-                synchronized(done) {
-                    try { done.wait(80) } catch (_: InterruptedException) {}
-                }
-                freshOptical = ref.get()
-                if (freshOptical != null) lastOpticalFrame = freshOptical
-            }
-
-            val oBmp: Bitmap? = freshOptical ?: lastOpticalFrame
-
-            val (optNormX, optNormY) = ui.getOpticalOffsetNorm()
-
-            videoRecorder.queueFrame(
-                thermalBmp = tBmp,
-                opticalBmp = oBmp,
-                displayMode = ui.getDisplayMode(),
-                isHybrid = ui.isHybridActive(),
-                hybridAlpha = ui.getHybridAlpha(),
-                opticalOffsetNormX = optNormX,
-                opticalOffsetNormY = optNormY,
-                targets = ui.getDetectedTargets()
-            )
-
-            captureHandler?.postDelayed(this, FRAME_INTERVAL_MS)
-        }
-    }
-
-    fun release() {
-        if (isRecording) stop()
-    }
-}
