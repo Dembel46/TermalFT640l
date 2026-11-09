@@ -238,7 +238,7 @@ class MainActivity : AppCompatActivity() {
                 override fun getDetectedTargets(): List<DetectedTarget> =
                     crosshairOverlay.detectedTargets
 
-                override fun getOpticalRotationDegrees(): Int = 90
+                override fun getOpticalRotationDegrees(): Int = 0
 
                 override fun getThermalRotationDegrees(): Int =
                     this@MainActivity.thermalRotationDegrees
