@@ -114,7 +114,7 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- ЛЕВЫЙ ВЫДВИЖНОЙ БАР (без кнопки записи) -->
+    <!-- ЛЕВЫЙ ВЫДВИЖНОЙ БАР -->
     <LinearLayout
         android:id="@+id/leftSidebar"
         android:layout_width="wrap_content"
@@ -166,8 +166,18 @@
                 android:id="@+id/btnPhoto"
                 android:layout_width="100dp"
                 android:layout_height="36dp"
+                android:layout_marginBottom="4dp"
                 android:backgroundTint="#0077CC"
                 android:text="ФОТО 📷"
+                android:textColor="#FFFFFF"
+                android:textSize="10sp" />
+
+            <Button
+                android:id="@+id/btnRecord"
+                android:layout_width="100dp"
+                android:layout_height="36dp"
+                android:backgroundTint="#B71C1C"
+                android:text="ЗАПИСЬ ⏺"
                 android:textColor="#FFFFFF"
                 android:textSize="10sp" />
         </LinearLayout>
@@ -185,39 +195,6 @@
             android:textColor="#FFFFFF"
             android:textSize="12sp" />
     </LinearLayout>
-
-    <!-- НОВАЯ: КНОПКА ПОВОРОТА ТЕПЛОВИЗОРА (слева снизу) -->
-    <Button
-        android:id="@+id/btnThermalRotate"
-        android:layout_width="42dp"
-        android:layout_height="42dp"
-        android:layout_margin="10dp"
-        android:backgroundTint="#80000000"
-        android:insetTop="0dp"
-        android:insetBottom="0dp"
-        android:padding="0dp"
-        android:text="⟳"
-        android:textColor="#00FF00"
-        android:textSize="20sp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
-
-    <!-- НОВАЯ: КНОПКА ЗАПИСИ ВНИЗУ ПО ЦЕНТРУ -->
-    <Button
-        android:id="@+id/btnRecordCenter"
-        android:layout_width="66dp"
-        android:layout_height="66dp"
-        android:layout_marginBottom="10dp"
-        android:backgroundTint="#B71C1C"
-        android:insetTop="0dp"
-        android:insetBottom="0dp"
-        android:padding="0dp"
-        android:text="⏺"
-        android:textColor="#FFFFFF"
-        android:textSize="26sp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
 
     <!-- НИЖНЯЯ ПРАВАЯ ПАНЕЛЬ -->
     <LinearLayout
