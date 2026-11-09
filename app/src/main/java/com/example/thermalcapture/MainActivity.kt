@@ -227,7 +227,12 @@ class MainActivity : AppCompatActivity() {
 
         // ---- RecordingController ----
         recordingController = RecordingController(this, storageManager,
-            InternalVideoRecorder(width = 1280, height = 720, frameRate = 20),
+            InternalVideoRecorder(
+                width = 1280,
+                height = 720,
+                frameRate = 20,
+                opticalRotationDegrees = 90   // поворот только слоя оптики
+            ),
             object : RecordingController.Ui {
                 override val thermalView: TextureView? get() = cameraView
                 override val opticalView: PreviewView? get() = phoneCameraView
@@ -246,12 +251,6 @@ class MainActivity : AppCompatActivity() {
 
                 override fun getDetectedTargets(): List<DetectedTarget> =
                     crosshairOverlay.detectedTargets
-
-                override fun getOpticalRotationDegrees(): Int {
-                    // Back-камера в landscape: PreviewView.bitmap приходит в сенсорной ориентации.
-                    // 90 = повернуть по часовой. Если видео боком — поменяйте на 270/180/0.
-                    return 180
-                }
 
                 override fun onRecordingStateChanged(recording: Boolean) {
                     isRecording = recording
