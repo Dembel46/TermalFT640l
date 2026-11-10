@@ -121,6 +121,10 @@ class CrosshairView @JvmOverloads constructor(
 
     var phoneCameraView: PreviewView? = null
     var thermalCameraView: TextureView? = null
+    
+    // Аппаратные кеши для нулевого выделения памяти
+    private var opticalFullCache: Bitmap? = null
+    private var thermalFullCache: Bitmap? = null
 
     var detectedTargets: List<DetectedTarget> = emptyList()
         set(value) { field = value; invalidate() }
@@ -158,10 +162,21 @@ class CrosshairView @JvmOverloads constructor(
         val pView = phoneCameraView ?: return
         if (pView.visibility != View.VISIBLE || pView.width <= 0 || pView.height <= 0) return
 
-        // ВАЖНО: PreviewView.bitmap НЕ надо recycle() — это его внутренний буфер
-        val fullBitmap = pView.bitmap ?: run { isOpticalReady = false; return }
+        val textureView = pView.getChildAt(0) as? TextureView ?: return
+        if (!textureView.isAvailable) return
 
+        if (opticalFullCache == null || opticalFullCache!!.width != textureView.width || opticalFullCache!!.height != textureView.height) {
+            opticalFullCache?.recycle()
+            opticalFullCache = Bitmap.createBitmap(textureView.width, textureView.height, Bitmap.Config.ARGB_8888)
+        }
+
+        val fullBitmap = opticalFullCache!!
         try {
+            if (textureView.getBitmap(fullBitmap) == null) {
+                isOpticalReady = false
+                return
+            }
+
             val scaleX = fullBitmap.width.toFloat() / pView.width
             val scaleY = fullBitmap.height.toFloat() / pView.height
 
@@ -178,7 +193,6 @@ class CrosshairView @JvmOverloads constructor(
             val topPx = (centerBmpY - negSize / 2).coerceIn(0, maxTop)
 
             fullBitmap.getPixels(opticalRawPixels, 0, negSize, leftPx, topPx, negSize, negSize)
-            // НЕ ВЫЗЫВАЕМ fullBitmap.recycle() !!!
 
             for (i in 0 until totalNegPixels) {
                 val p = opticalRawPixels[i]
@@ -215,16 +229,42 @@ class CrosshairView @JvmOverloads constructor(
         val tView = thermalCameraView ?: return
         if (tView.visibility != View.VISIBLE || !tView.isAvailable || tView.width <= 0 || tView.height <= 0) return
 
+        if (thermalFullCache == null || thermalFullCache!!.width != tView.width || thermalFullCache!!.height != tView.height) {
+            thermalFullCache?.recycle()
+            thermalFullCache = Bitmap.createBitmap(tView.width, tView.height, Bitmap.Config.ARGB_8888)
+        }
+        val fullBitmap = thermalFullCache!!
+
         try {
-            if (tView.getBitmap(thermalRawBitmap) == null) {
+            if (tView.getBitmap(fullBitmap) == null) {
                 isThermalReady = false
                 return
             }
-            thermalRawBitmap.getPixels(thermalRawPixels, 0, negSize, 0, 0, negSize, negSize)
+
+            val scaleX = fullBitmap.width.toFloat() / tView.width
+            val scaleY = fullBitmap.height.toFloat() / tView.height
+
+            val cx = thermalRect.centerX() - tView.x
+            val cy = thermalRect.centerY() - tView.y
+
+            val centerBmpX = (cx * scaleX).roundToInt()
+            val centerBmpY = (cy * scaleY).roundToInt()
+
+            val maxLeft = (fullBitmap.width - negSize).coerceAtLeast(0)
+            val maxTop = (fullBitmap.height - negSize).coerceAtLeast(0)
+
+            val leftPx = (centerBmpX - negSize / 2).coerceIn(0, maxLeft)
+            val topPx = (centerBmpY - negSize / 2).coerceIn(0, maxTop)
+
+            fullBitmap.getPixels(thermalRawPixels, 0, negSize, leftPx, topPx, negSize, negSize)
 
             for (i in 0 until totalNegPixels) {
                 val p = thermalRawPixels[i]
-                val luma = (p and 0xFF)
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                val luma = (r * 77 + g * 150 + b * 29) shr 8
+
                 val rawNeg = 255 - luma
                 val contrastNeg = if (rawNeg > 128) {
                     (128 + (rawNeg - 128) * 1.4f).toInt().coerceIn(0, 255)
@@ -235,14 +275,8 @@ class CrosshairView @JvmOverloads constructor(
             }
             thermalNegativeBitmap.setPixels(thermalNegPixels, 0, negSize, 0, 0, negSize, negSize)
 
-            val scaleX = thermalRawBitmap.width.toFloat() / tView.width.toFloat()
-            val scaleY = thermalRawBitmap.height.toFloat() / tView.height.toFloat()
-
-            val cx = thermalRect.centerX() - tView.x
-            val cy = thermalRect.centerY() - tView.y
-
-            val screenLeft = tView.x + cx - (negSize / scaleX) / 2f
-            val screenTop = tView.y + cy - (negSize / scaleY) / 2f
+            val screenLeft = leftPx / scaleX + tView.x
+            val screenTop = topPx / scaleY + tView.y
 
             thermalMatrix.reset()
             thermalMatrix.setScale(1f / scaleX, 1f / scaleY)
