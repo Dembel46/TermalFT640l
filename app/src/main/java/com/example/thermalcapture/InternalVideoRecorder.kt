@@ -167,7 +167,7 @@ class InternalVideoRecorder(
             isHybrid -> {
                 opticalBmp?.let {
                     val area = RectF(0f, 0f, width.toFloat(), height.toFloat())
-                    drawBitmapCrop(it, area, bitmapPaint)  // <-- crop для оптики
+                    drawBitmapCrop(it, area, bitmapPaint)
                     opticalArea.set(area)
                 }
                 thermalBmp?.let {
@@ -177,20 +177,21 @@ class InternalVideoRecorder(
                     val top = (height - tH) / 2f
                     val area = RectF(left, top, left + tW, top + tH)
                     hybridPaint.alpha = (hybridAlpha * 255).toInt().coerceIn(0, 255)
-                    drawBitmapFit(it, area, hybridPaint)  // тепловизор — fit
+                    drawBitmapFit(it, area, hybridPaint)
                     thermalArea.set(area)
                 }
             }
-                       displayMode == 0 -> {
+            displayMode == 0 -> {
                 val splitX = (width * 0.7f).toInt()
                 thermalBmp?.let {
                     val area = RectF(0f, 0f, splitX.toFloat(), height.toFloat())
-                    drawBitmapFit(it, area, bitmapPaint)  // тепловизор — fit
+                    drawBitmapFit(it, area, bitmapPaint)
                     thermalArea.set(area)
                 }
                 opticalBmp?.let {
                     val area = RectF(splitX.toFloat(), 0f, width.toFloat(), height.toFloat())
-                    drawBitmapFit(it, area, bitmapPaint)  // <-- FIT, не CROP
+                    // ИСПРАВЛЕНИЕ: Теперь оптика корректно обрезается, а не сплющивается!
+                    drawBitmapCrop(it, area, bitmapPaint)
                     opticalArea.set(area)
                 }
             }
@@ -204,7 +205,7 @@ class InternalVideoRecorder(
             displayMode == 2 -> {
                 opticalBmp?.let {
                     val area = RectF(0f, 0f, width.toFloat(), height.toFloat())
-                    drawBitmapCrop(it, area, bitmapPaint)  // оптика — crop
+                    drawBitmapCrop(it, area, bitmapPaint)
                     opticalArea.set(area)
                 }
             }
@@ -264,7 +265,6 @@ class InternalVideoRecorder(
         }
     }
 
-    /** Вписывает с сохранением пропорций (чёрные полосы, если нужно). */
     private fun drawBitmapFit(src: Bitmap, area: RectF, paint: Paint) {
         if (area.width() <= 0f || area.height() <= 0f) return
         val srcW = src.width.toFloat()
@@ -286,7 +286,6 @@ class InternalVideoRecorder(
         compositeCanvas.drawBitmap(src, tmpSrcRect, tmpDstRectF, paint)
     }
 
-    /** Заполняет область с обрезкой краёв (как PreviewView FILL_CENTER). */
     private fun drawBitmapCrop(src: Bitmap, area: RectF, paint: Paint) {
         if (area.width() <= 0f || area.height() <= 0f) return
         val srcW = src.width.toFloat()
@@ -416,7 +415,7 @@ class InternalVideoRecorder(
         } else onCompleted?.invoke()
     }
 
-    private fun fastArgbToNv12(argb: IntArray, nv12: ByteArray, w: Int, h: Int) {
+    private fun convertArgbToNv12(argb: IntArray, nv12: ByteArray, w: Int, h: Int) {
         val frameSize = w * h
         var yIdx = 0
         var uvIdx = frameSize
