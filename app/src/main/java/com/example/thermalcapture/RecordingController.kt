@@ -1,8 +1,6 @@
 package com.example.thermalcapture
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Rect
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -12,7 +10,6 @@ import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.view.PreviewView
 import java.io.File
-import java.util.concurrent.atomic.AtomicReference
 
 class RecordingController(
     private val activity: AppCompatActivity,
@@ -38,24 +35,17 @@ class RecordingController(
     }
 
     companion object {
-        private const val FRAME_INTERVAL_MS = 66L   // 15 FPS
-        private const val OPTICAL_EVERY_N = 2
-        private const val LOOP_SEGMENT_SEC = 180
+        private const val FRAME_INTERVAL_MS = 66L   // 15 FPS (быстро и стабильно)
+        private const val LOOP_SEGMENT_SEC = 180    // Циклическая запись 3 минуты
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var captureThread: HandlerThread? = null
     private var captureHandler: Handler? = null
 
-        private val opticalBmp = Bitmap.createBitmap(480, 270, Bitmap.Config.ARGB_8888)
-    private val thermalBmp = Bitmap.createBitmap(480, 360, Bitmap.Config.ARGB_8888)
-    private val opticalCanvas = Canvas(opticalBmp)
-    private val srcRect = Rect()
-    private val dstRect = Rect(0, 0, opticalBmp.width, opticalBmp.height)
-
-    private var lastOpticalFrame: Bitmap? = null
-    private var lastThermalFrame: Bitmap? = null
-    private var frameCounter = 0
+    // Готовые аппаратные буферы — 0 байт выделения памяти в цикле!
+    private var opticalBmp: Bitmap? = null
+    private var thermalBmp: Bitmap? = null
 
     @Volatile private var isRecording = false
     private var durationSec = 0
@@ -77,10 +67,7 @@ class RecordingController(
         }
         isRecording = true
         durationSec = 0
-        frameCounter = 0
         nextTickMs = SystemClock.uptimeMillis() + 1000L
-        lastOpticalFrame = null
-        lastThermalFrame = null
         ui.onRecordingStateChanged(true)
 
         captureThread = HandlerThread("RecordCaptureThread").apply { start() }
@@ -95,8 +82,6 @@ class RecordingController(
         captureThread?.quitSafely()
         captureThread = null
         captureHandler = null
-        lastOpticalFrame = null
-        lastThermalFrame = null
 
         val fileToExport = currentFile
         ui.onRecordingStateChanged(false)
@@ -134,52 +119,47 @@ class RecordingController(
                 mainHandler.post { ui.onRecordingTick(durationSec) }
             }
 
-            frameCounter++
-
-            val thermalView = ui.thermalView
-            val opticalView = ui.opticalView
-
-            var freshThermal: Bitmap? = null
-            if (ui.isThermalStreaming() && thermalView != null && thermalView.isAvailable) {
-                try {
-                    if (thermalView.getBitmap(thermalBmp) != null) freshThermal = thermalBmp
-                } catch (_: Exception) { freshThermal = null }
-            }
-            if (freshThermal != null) lastThermalFrame = freshThermal
-            val tBmp: Bitmap? = freshThermal ?: lastThermalFrame
-
-            // Оптика — раз в N кадров
-            var freshOptical: Bitmap? = null
-            if (opticalView != null && opticalView.visibility == View.VISIBLE
-                && frameCounter % OPTICAL_EVERY_N == 0) {
-                val ref = AtomicReference<Bitmap?>(null)
-                val done = Object()
-                mainHandler.post {
-                    try {
-                        val b = opticalView.bitmap
-                        if (b != null) {
-                            srcRect.set(0, 0, b.width, b.height)
-                            opticalCanvas.drawBitmap(b, srcRect, dstRect, null)
-                            ref.set(opticalBmp)
-                        }
-                    } catch (_: Exception) {
-                    } finally {
-                        synchronized(done) { done.notifyAll() }
+            // 1. Быстрый аппаратный захват тепловизора (напрямую из памяти видеокарты)
+            val thermalTextureView = ui.thermalView
+            var readyThermal: Bitmap? = null
+            if (ui.isThermalStreaming() && thermalTextureView != null && thermalTextureView.isAvailable) {
+                val tw = thermalTextureView.width
+                val th = thermalTextureView.height
+                if (tw > 0 && th > 0) {
+                    if (thermalBmp == null || thermalBmp!!.width != tw || thermalBmp!!.height != th) {
+                        thermalBmp?.recycle()
+                        thermalBmp = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
                     }
+                    try {
+                        thermalTextureView.getBitmap(thermalBmp!!)
+                        readyThermal = thermalBmp
+                    } catch (_: Exception) {}
                 }
-                synchronized(done) {
-                    try { done.wait(80) } catch (_: InterruptedException) {}
-                }
-                freshOptical = ref.get()
-                if (freshOptical != null) lastOpticalFrame = freshOptical
             }
-            val oBmp: Bitmap? = freshOptical ?: lastOpticalFrame
+
+            // 2. Быстрый аппаратный захват оптики (БЕЗ использования тяжелого PreviewView.bitmap)
+            val opticalTextureView = ui.opticalView?.getChildAt(0) as? TextureView
+            var readyOptical: Bitmap? = null
+            if (opticalTextureView != null && opticalTextureView.isAvailable && ui.opticalView?.visibility == View.VISIBLE) {
+                val ow = opticalTextureView.width
+                val oh = opticalTextureView.height
+                if (ow > 0 && oh > 0) {
+                    if (opticalBmp == null || opticalBmp!!.width != ow || opticalBmp!!.height != oh) {
+                        opticalBmp?.recycle()
+                        opticalBmp = Bitmap.createBitmap(ow, oh, Bitmap.Config.ARGB_8888)
+                    }
+                    try {
+                        opticalTextureView.getBitmap(opticalBmp!!)
+                        readyOptical = opticalBmp
+                    } catch (_: Exception) {}
+                }
+            }
 
             val (optNormX, optNormY) = ui.getOpticalOffsetNorm()
 
             videoRecorder.queueFrame(
-                thermalBmp = tBmp,
-                opticalBmp = oBmp,
+                thermalBmp = readyThermal,
+                opticalBmp = readyOptical,
                 displayMode = ui.getDisplayMode(),
                 isHybrid = ui.isHybridActive(),
                 hybridAlpha = ui.getHybridAlpha(),
