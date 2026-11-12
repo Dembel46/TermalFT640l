@@ -10,9 +10,11 @@ import android.os.Looper
 
 class AlertManager(context: Context) {
 
+    private val appContext = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
     private var toneGenerator: ToneGenerator? = null
-    private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    private val cameraManager =
+        appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private var torchCameraId: String? = null
 
     var isSoundEnabled: Boolean = true
@@ -28,10 +30,22 @@ class AlertManager(context: Context) {
                 cameraManager.getCameraCharacteristics(id)
                     .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             }
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
     }
 
+    /**
+     * ✅ 4.4: можно вызывать из любого потока.
+     * Если мы не на main — перекидываем на main-looper.
+     */
     fun triggerMotionAlert() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { triggerMotionAlertInternal() }
+            return
+        }
+        triggerMotionAlertInternal()
+    }
+
+    private fun triggerMotionAlertInternal() {
         val now = System.currentTimeMillis()
         if (now - lastAlertTime < alertCooldownMs) return
         lastAlertTime = now
@@ -39,28 +53,37 @@ class AlertManager(context: Context) {
         if (isSoundEnabled) {
             try {
                 toneGenerator?.startTone(ToneGenerator.TONE_PROP_BEEP2, 180)
-            } catch (e: Exception) {}
+            } catch (_: Exception) {}
         }
 
-        if (isFlashEnabled && torchCameraId != null) {
+        if (isFlashEnabled) {
+            val id = torchCameraId ?: return
             try {
-                cameraManager.setTorchMode(torchCameraId!!, true)
+                cameraManager.setTorchMode(id, true)
                 handler.postDelayed({
                     try {
-                        cameraManager.setTorchMode(torchCameraId!!, false)
-                    } catch (e: Exception) {}
+                        cameraManager.setTorchMode(id, false)
+                    } catch (_: Exception) {}
                 }, 120)
-            } catch (e: Exception) {}
+            } catch (_: Exception) {}
         }
     }
 
     fun release() {
-        toneGenerator?.release()
-        toneGenerator = null
-        if (torchCameraId != null) {
-            try {
-                cameraManager.setTorchMode(torchCameraId!!, false)
-            } catch (e: Exception) {}
+        // Гарантируем, что release выполнится на main
+        val doRelease = {
+            try { toneGenerator?.release() } catch (_: Exception) {}
+            toneGenerator = null
+            val id = torchCameraId
+            if (id != null) {
+                try { cameraManager.setTorchMode(id, false) } catch (_: Exception) {}
+            }
+            handler.removeCallbacksAndMessages(null)
+        }
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(doRelease)
+        } else {
+            doRelease()
         }
     }
 }
