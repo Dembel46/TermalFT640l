@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout
+<androidx.constraintlayout.widget.ConstraintLayout 
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/rootLayout"
@@ -7,233 +7,6 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <FrameLayout
-        android:id="@+id/cameraContainer"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
-
-        <FrameLayout
-            android:id="@+id/opticalContainer"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="#000000">
-
-            <androidx.camera.view.PreviewView
-                android:id="@+id/pvPhoneCamera"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                app:implementationMode="compatible" />
-        </FrameLayout>
-
-        <FrameLayout
-            android:id="@+id/thermalContainer"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="#00000000">
-
-            <TextureView
-                android:id="@+id/svUvcCamera"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center" />
-        </FrameLayout>
-    </FrameLayout>
-
-    <com.example.thermalcapture.CrosshairView
-        android:id="@+id/crosshairOverlay"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
-
-    <!-- Верхняя панель: статус, индикатор записи, шестерёнка -->
-    <LinearLayout
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_margin="10dp"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
-
-        <Button
-            android:id="@+id/btnThermalFullscreen"
-            android:layout_width="38dp"
-            android:layout_height="38dp"
-            android:backgroundTint="#80000000"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:padding="0dp"
-            android:text="⛶"
-            android:textColor="#00FF00"
-            android:textSize="18sp" />
-
-        <TextView
-            android:id="@+id/tvStatus"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:background="#99000000"
-            android:padding="6dp"
-            android:text="Ожидание подключения..."
-            android:textColor="#00FF00"
-            android:textSize="11sp" />
-    </LinearLayout>
-
-    <!-- Индикатор режима: белый текст, при записи — красный фон -->
-    <TextView
-        android:id="@+id/tvRecordIndicator"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
-        android:layout_marginEnd="10dp"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
-        android:paddingTop="6dp"
-        android:paddingBottom="6dp"
-        android:background="@android:color/transparent"
-        android:text="РЕЖИМ: ЦИКЛ (3м)"
-        android:textColor="#FFFFFF"
-        android:textSize="11sp"
-        android:textStyle="bold"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
-
-    <Button
-        android:id="@+id/btnSettings"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:layout_margin="10dp"
-        android:backgroundTint="#80000000"
-        android:insetTop="0dp"
-        android:insetBottom="0dp"
-        android:padding="0dp"
-        android:text="⚙"
-        android:textColor="#FFFFFF"
-        android:textSize="20sp"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
-
-    <!-- Левый выдвижной бар -->
-    <LinearLayout
-        android:id="@+id/leftSidebar"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
-
-        <LinearLayout
-            android:id="@+id/sidebarContent"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="#CC111111"
-            android:orientation="vertical"
-            android:padding="6dp">
-
-            <Button
-                android:id="@+id/btnMode"
-                android:layout_width="100dp"
-                android:layout_height="36dp"
-                android:layout_marginBottom="4dp"
-                android:backgroundTint="#333333"
-                android:text="70/30"
-                android:textColor="#FFFFFF"
-                android:textSize="10sp" />
-
-            <Button
-                android:id="@+id/btnCalibrate"
-                android:layout_width="100dp"
-                android:layout_height="36dp"
-                android:layout_marginBottom="4dp"
-                android:backgroundTint="#333333"
-                android:text="ЮСТИРОВКА"
-                android:textColor="#FFFFFF"
-                android:textSize="10sp" />
-
-            <Button
-                android:id="@+id/btnTracking"
-                android:layout_width="100dp"
-                android:layout_height="36dp"
-                android:backgroundTint="#444444"
-                android:text="ТРЕК: ВЫКЛ"
-                android:textColor="#FFFFFF"
-                android:textSize="10sp" />
-        </LinearLayout>
-
-        <Button
-            android:id="@+id/btnToggleSidebar"
-            android:layout_width="26dp"
-            android:layout_height="48dp"
-            android:layout_gravity="center_vertical"
-            android:backgroundTint="#AA222222"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:padding="0dp"
-            android:text="◀"
-            android:textColor="#FFFFFF"
-            android:textSize="12sp" />
-    </LinearLayout>
-
-    <!-- НИЖНЯЯ ЛЕВАЯ ПАНЕЛЬ: поворот, зум, палитра, гибрид -->
-    <LinearLayout
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_margin="10dp"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
-
-        <Button
-            android:id="@+id/btnThermalRotate"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
-            android:layout_marginEnd="6dp"
-            android:backgroundTint="#444444"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:padding="0dp"
-            android:text="⟳"
-            android:textColor="#FFFFFF"
-            android:textSize="20sp" />
-
-        <Button
-            android:id="@+id/btnZoom"
-            android:layout_width="wrap_content"
-            android:layout_height="42dp"
-            android:layout_marginEnd="6dp"
-            android:backgroundTint="#444444"
-            android:text="ЗУМ: 0x"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp" />
-
-        <Button
-            android:id="@+id/btnContrastType"
-            android:layout_width="wrap_content"
-            android:layout_height="42dp"
-            android:layout_marginEnd="6dp"
-            android:backgroundTint="#444444"
-            android:text="ПАЛИТРА"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp" />
-
-        <Button
-            android:id="@+id/btnHybrid"
-            android:layout_width="wrap_content"
-            android:layout_height="42dp"
-            android:backgroundTint="#444444"
-            android:text="ГИБРИД"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp" />
-    </LinearLayout>
     <androidx.constraintlayout.widget.Guideline
         android:id="@+id/splitGuideline"
         android:layout_width="wrap_content"
@@ -268,7 +41,8 @@
         <androidx.camera.view.PreviewView
             android:id="@+id/pvPhoneCamera"
             android:layout_width="match_parent"
-            android:layout_height="match_parent" />
+            android:layout_height="match_parent"
+            app:implementationMode="compatible" />
     </FrameLayout>
 
     <com.example.thermalcapture.CrosshairView
@@ -280,37 +54,13 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Кнопка записи: справа, чуть выше середины -->
-    <com.example.thermalcapture.RecordButtonView
-        android:id="@+id/btnRecordCenter"
-        android:layout_width="66dp"
-        android:layout_height="66dp"
-        android:layout_marginEnd="16dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintVertical_bias="0.42" />
-<View
-    android:id="@+id/flashOverlay"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="@drawable/flash_vignette"
-    android:visibility="gone"
-    android:clickable="false"
-    android:focusable="false"
-    app:layout_constraintBottom_toBottomOf="parent"
-    app:layout_constraintEnd_toEndOf="parent"
-    app:layout_constraintStart_toStartOf="parent"
-    app:layout_constraintTop_toTopOf="parent" />
-    
-    <!-- Кнопка фото: справа, ниже записи -->
-    <com.example.thermalcapture.PhotoButtonView
-        android:id="@+id/btnPhotoFloat"
-        android:layout_width="66dp"
-        android:layout_height="66dp"
-        android:layout_marginTop="14dp"
-        android:layout_marginEnd="16dp"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/btnRecordCenter" />
+    <!-- Панель статуса и кнопки -->
+    <TextView android:id="@+id/tvStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" 
+        android:layout_margin="10dp" android:background="#99000000" android:padding="5dp" 
+        android:textColor="#00FF00" android:textSize="10sp"
+        app:layout_constraintStart_toStartOf="parent" app:layout_constraintTop_toTopOf="parent" />
+
+    <Button android:id="@+id/btnMode" android:layout_width="wrap_content" android:layout_height="40dp"
+        android:text="70/30" app:layout_constraintBottom_toBottomOf="parent" app:layout_constraintEnd_toEndOf="parent"/>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
