@@ -349,10 +349,9 @@ class MainActivity : AppCompatActivity() {
                     if (active) {
                         try {
                             val bmp = cameraView.getBitmap(thermalAnalyzeBmp)
-                            if (bmp != null) {
-                                val copy = bmp.copy(Bitmap.Config.ARGB_8888, false)
-                                dispatchFrameToVision(copy)
-                            } else isProcessingFrame = false
+if (bmp != null) {
+    dispatchFrameToVision(thermalAnalyzeBmp) // без copy
+} else isProcessingFrame = false
                         } catch (_: Exception) { isProcessingFrame = false }
                     } else {
                         if (crosshairOverlay.detectedTargets.isNotEmpty()) {
@@ -372,31 +371,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dispatchFrameToVision(bmp: Bitmap) {
-        isProcessingFrame = true
-        visionHandler.post {
-            try {
-                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp) else emptyList()
-                bmp.recycle()
-                val hasMotion = targets.any { it.type == TargetType.MOVING }
-                if (hasMotion && isTrackingEnabled) alertManager.triggerMotionAlert()
-                mainHandler.post {
-                    crosshairOverlay.detectedTargets = targets
-                    when {
-                        !isTrackingEnabled -> setStatus("Трекинг: ВЫКЛЮЧЕН")
-                        targets.isNotEmpty() -> {
-                            val moving = targets.count { it.type == TargetType.MOVING }
-                            setStatus("Целей: ${targets.size} (Движение: $moving)")
-                        }
-                        else -> setStatus("Поиск целей: АКТИВЕН")
-                    }
-                }
-            } catch (_: Exception) {
-            } finally {
-                isProcessingFrame = false
+    isProcessingFrame = true
+    visionHandler.post {
+        try {
+            val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp) else emptyList()
+            // bmp — это thermalAnalyzeBmp, его нельзя recycle
+            val hasMotion = targets.any { it.type == TargetType.MOVING || it.type == TargetType.HUMAN_VEHICLE }
+            if (hasMotion && isTrackingEnabled) {
+                mainHandler.post { alertManager.triggerMotionAlert() }
             }
+            mainHandler.post {
+                crosshairOverlay.detectedTargets = targets
+                when {
+                    !isTrackingEnabled -> setStatus("Трекинг: ВЫКЛЮЧЕН")
+                    targets.isNotEmpty() -> {
+                        val moving = targets.count { it.type == TargetType.MOVING }
+                        setStatus("Целей: ${targets.size} (Движение: $moving)")
+                    }
+                    else -> setStatus("Поиск целей: АКТИВЕН")
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            isProcessingFrame = false
         }
     }
-
+    }
     private fun checkPermissionsAndInit() {
         val needed = mutableListOf(Manifest.permission.CAMERA)
         val missing = needed.filter {
@@ -423,34 +423,39 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateOverlayBounds() {
-        adjustThermalViewBounds()
+    adjustThermalViewBounds()
 
-        if (thermalContainer.visibility == View.VISIBLE &&
-            cameraView.width > 0 && cameraView.height > 0) {
-            val locT = IntArray(2); cameraView.getLocationOnScreen(locT)
-            val locR = IntArray(2); rootLayout.getLocationOnScreen(locR)
-            crosshairOverlay.thermalRect = RectF(
-                (locT[0] - locR[0]).toFloat(),
-                (locT[1] - locR[1]).toFloat(),
-                (locT[0] - locR[0] + cameraView.width).toFloat(),
-                (locT[1] - locR[1] + cameraView.height).toFloat()
-            )
-        } else crosshairOverlay.thermalRect = RectF()
+    if (thermalContainer.visibility == View.VISIBLE &&
+        cameraView.width > 0 && cameraView.height > 0) {
+        val locT = IntArray(2); cameraView.getLocationOnScreen(locT)
+        val locR = IntArray(2); rootLayout.getLocationOnScreen(locR)
+        val l = (locT[0] - locR[0]).toFloat()
+        val t = (locT[1] - locR[1]).toFloat()
+        val w = cameraView.width.toFloat()
+        val h = cameraView.height.toFloat()
+        val cx = l + w / 2f
+        val cy = t + h / 2f
+        val rot = thermalRotationDegrees
+        val (rw, rh) = if (rot == 90 || rot == 270) h to w else w to h
+        crosshairOverlay.thermalRect = RectF(
+            cx - rw / 2f, cy - rh / 2f, cx + rw / 2f, cy + rh / 2f
+        )
+    } else crosshairOverlay.thermalRect = RectF()
 
-        if (opticalContainer.visibility == View.VISIBLE &&
-            phoneCameraView.width > 0 && phoneCameraView.height > 0) {
-            val locO = IntArray(2); phoneCameraView.getLocationOnScreen(locO)
-            val locR = IntArray(2); rootLayout.getLocationOnScreen(locR)
-            crosshairOverlay.opticalRect = RectF(
-                (locO[0] - locR[0]).toFloat(),
-                (locO[1] - locR[1]).toFloat(),
-                (locO[0] - locR[0] + phoneCameraView.width).toFloat(),
-                (locO[1] - locR[1] + phoneCameraView.height).toFloat()
-            )
-        } else crosshairOverlay.opticalRect = RectF()
+    if (opticalContainer.visibility == View.VISIBLE &&
+        phoneCameraView.width > 0 && phoneCameraView.height > 0) {
+        val locO = IntArray(2); phoneCameraView.getLocationOnScreen(locO)
+        val locR = IntArray(2); rootLayout.getLocationOnScreen(locR)
+        crosshairOverlay.opticalRect = RectF(
+            (locO[0] - locR[0]).toFloat(),
+            (locO[1] - locR[1]).toFloat(),
+            (locO[0] - locR[0] + phoneCameraView.width).toFloat(),
+            (locO[1] - locR[1] + phoneCameraView.height).toFloat()
+        )
+    } else crosshairOverlay.opticalRect = RectF()
 
-        crosshairOverlay.invalidate()
-    }
+    crosshairOverlay.invalidate()
+}
 
     private fun adjustThermalViewBounds() {
         val cw = thermalContainer.width
