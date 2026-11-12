@@ -5,6 +5,7 @@ import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.util.Log
+import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -17,6 +18,9 @@ import com.hoho.android.usbserial.driver.UsbSerialProber
 
 /**
  * Обёртка над CameraX (оптика) + CameraHelper (UVC тепловизор) + поиск COM-порта.
+ *
+ * ВАЖНО: все колбэки [Callbacks] приходят из потоков UVC-библиотеки,
+ * не из main. Вся работа с UI (Toast, runOnUiThread) — на стороне MainActivity.
  */
 class CameraController(
     private val context: Context,
@@ -35,11 +39,11 @@ class CameraController(
     fun startPhoneCamera() {
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
-            val provider = future.get()
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(phonePreviewView.surfaceProvider)
-            }
             try {
+                val provider = future.get()
+                val preview = Preview.Builder().build().also {
+                    it.setSurfaceProvider(phonePreviewView.surfaceProvider)
+                }
                 provider.unbindAll()
                 provider.bindToLifecycle(
                     lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview
@@ -51,12 +55,19 @@ class CameraController(
     }
 
     fun initThermalCamera() {
+        // Освобождаем предыдущий helper, если был
+        try { cameraHelper?.release() } catch (_: Exception) {}
         cameraHelper = CameraHelper().apply {
             setStateCallback(object : ICameraHelper.StateCallback {
                 override fun onAttach(device: UsbDevice) {
                     if (isVideoDevice(device)) {
-                        callbacks.onThermalStreamingChanged(false, "Подключение к плате: ${device.deviceName}")
+                        callbacks.onThermalStreamingChanged(
+                            false, "Подключение к плате: ${device.deviceName}"
+                        )
                         selectDevice(device)
+                    } else {
+                        // Не UVC-видео — вероятно, это UART-адаптер
+                        callbacks.onSerialDeviceAttached(device)
                     }
                 }
 
@@ -85,34 +96,41 @@ class CameraController(
                 override fun onCancel(device: UsbDevice) {
                     callbacks.onThermalStreamingChanged(false, "Подключение отменено")
                 }
-                override fun onSerialDeviceAttached(device: UsbDevice) {
-    runOnUiThread {
-        if (serialController.connect(this@MainActivity, device)) {
-            Toast.makeText(this@MainActivity,
-                "UART: ${serialController.connectedDeviceName}", Toast.LENGTH_SHORT).show()
-        }
             })
         }
     }
 
-    fun addSurface(surface: android.view.Surface) {
-        cameraHelper?.addSurface(surface, false)
+    fun addSurface(surface: Surface) {
+        try {
+            cameraHelper?.addSurface(surface, false)
+        } catch (e: Exception) {
+            Log.e("CameraController", "addSurface error: ${e.message}")
+        }
     }
 
-    fun removeSurface(surface: android.view.Surface) {
-        cameraHelper?.removeSurface(surface)
+    fun removeSurface(surface: Surface) {
+        try {
+            cameraHelper?.removeSurface(surface)
+        } catch (e: Exception) {
+            Log.e("CameraController", "removeSurface error: ${e.message}")
+        }
     }
 
     fun release() {
-        cameraHelper?.release()
+        try { cameraHelper?.release() } catch (_: Exception) {}
         cameraHelper = null
     }
 
     /** Найти первый USB-UART драйвер (для FT640SerialController.connect). */
     fun findFirstSerialDevice(): UsbDevice? {
-        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-        val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
-        return drivers.firstOrNull()?.device
+        return try {
+            val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+            val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
+            drivers.firstOrNull()?.device
+        } catch (e: Exception) {
+            Log.e("CameraController", "findFirstSerialDevice error: ${e.message}")
+            null
+        }
     }
 
     private fun isVideoDevice(device: UsbDevice): Boolean {
