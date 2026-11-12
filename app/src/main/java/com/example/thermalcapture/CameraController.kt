@@ -85,6 +85,12 @@ class CameraController(
                 override fun onCancel(device: UsbDevice) {
                     callbacks.onThermalStreamingChanged(false, "Подключение отменено")
                 }
+                override fun onSerialDeviceAttached(device: UsbDevice) {
+    runOnUiThread {
+        if (serialController.connect(this@MainActivity, device)) {
+            Toast.makeText(this@MainActivity,
+                "UART: ${serialController.connectedDeviceName}", Toast.LENGTH_SHORT).show()
+        }
             })
         }
     }
