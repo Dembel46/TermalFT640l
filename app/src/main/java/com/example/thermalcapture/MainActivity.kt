@@ -8,9 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbDevice
@@ -200,10 +198,17 @@ class MainActivity : AppCompatActivity() {
                         thermalSurface?.let { if (it.isValid) cameraController.addSurface(it) }
                     }
                 }
+
+                // ✅ 4.3: колбэк приходит из UVC-потока — переводим на main
                 override fun onSerialDeviceAttached(device: UsbDevice) {
-                    if (serialController.connect(this@MainActivity, device)) {
-                        Toast.makeText(this@MainActivity,
-                            "UART: ${serialController.connectedDeviceName}", Toast.LENGTH_SHORT).show()
+                    runOnUiThread {
+                        if (serialController.connect(this@MainActivity, device)) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "UART: ${serialController.connectedDeviceName}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
                     }
                 }
             })
@@ -348,10 +353,11 @@ class MainActivity : AppCompatActivity() {
                     val active = isThermalStreaming && cameraView.width > 0 && cameraView.isAvailable
                     if (active) {
                         try {
+                            // ✅ 4.3: без copy — движок сам масштабирует
                             val bmp = cameraView.getBitmap(thermalAnalyzeBmp)
-if (bmp != null) {
-    dispatchFrameToVision(thermalAnalyzeBmp) // без copy
-} else isProcessingFrame = false
+                            if (bmp != null) {
+                                dispatchFrameToVision(thermalAnalyzeBmp)
+                            } else isProcessingFrame = false
                         } catch (_: Exception) { isProcessingFrame = false }
                     } else {
                         if (crosshairOverlay.detectedTargets.isNotEmpty()) {
@@ -370,33 +376,36 @@ if (bmp != null) {
         })
     }
 
+    // ✅ 4.3: не рециклим thermalAnalyzeBmp и не копируем его
     private fun dispatchFrameToVision(bmp: Bitmap) {
-    isProcessingFrame = true
-    visionHandler.post {
-        try {
-            val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp) else emptyList()
-            // bmp — это thermalAnalyzeBmp, его нельзя recycle
-            val hasMotion = targets.any { it.type == TargetType.MOVING || it.type == TargetType.HUMAN_VEHICLE }
-            if (hasMotion && isTrackingEnabled) {
-                mainHandler.post { alertManager.triggerMotionAlert() }
-            }
-            mainHandler.post {
-                crosshairOverlay.detectedTargets = targets
-                when {
-                    !isTrackingEnabled -> setStatus("Трекинг: ВЫКЛЮЧЕН")
-                    targets.isNotEmpty() -> {
-                        val moving = targets.count { it.type == TargetType.MOVING }
-                        setStatus("Целей: ${targets.size} (Движение: $moving)")
-                    }
-                    else -> setStatus("Поиск целей: АКТИВЕН")
+        isProcessingFrame = true
+        visionHandler.post {
+            try {
+                val targets = if (isTrackingEnabled) visionEngine.processFrame(bmp) else emptyList()
+                val hasMotion = targets.any {
+                    it.type == TargetType.MOVING || it.type == TargetType.HUMAN_VEHICLE
                 }
+                if (hasMotion && isTrackingEnabled) {
+                    mainHandler.post { alertManager.triggerMotionAlert() }
+                }
+                mainHandler.post {
+                    crosshairOverlay.detectedTargets = targets
+                    when {
+                        !isTrackingEnabled -> setStatus("Трекинг: ВЫКЛЮЧЕН")
+                        targets.isNotEmpty() -> {
+                            val moving = targets.count { it.type == TargetType.MOVING }
+                            setStatus("Целей: ${targets.size} (Движение: $moving)")
+                        }
+                        else -> setStatus("Поиск целей: АКТИВЕН")
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                isProcessingFrame = false
             }
-        } catch (_: Exception) {
-        } finally {
-            isProcessingFrame = false
         }
     }
-    }
+
     private fun checkPermissionsAndInit() {
         val needed = mutableListOf(Manifest.permission.CAMERA)
         val missing = needed.filter {
@@ -422,40 +431,42 @@ if (bmp != null) {
         cameraController.initThermalCamera()
     }
 
+    // ✅ 4.3: учитываем поворот тепловизора при расчёте thermalRect
     private fun updateOverlayBounds() {
-    adjustThermalViewBounds()
+        adjustThermalViewBounds()
 
-    if (thermalContainer.visibility == View.VISIBLE &&
-        cameraView.width > 0 && cameraView.height > 0) {
-        val locT = IntArray(2); cameraView.getLocationOnScreen(locT)
-        val locR = IntArray(2); rootLayout.getLocationOnScreen(locR)
-        val l = (locT[0] - locR[0]).toFloat()
-        val t = (locT[1] - locR[1]).toFloat()
-        val w = cameraView.width.toFloat()
-        val h = cameraView.height.toFloat()
-        val cx = l + w / 2f
-        val cy = t + h / 2f
-        val rot = thermalRotationDegrees
-        val (rw, rh) = if (rot == 90 || rot == 270) h to w else w to h
-        crosshairOverlay.thermalRect = RectF(
-            cx - rw / 2f, cy - rh / 2f, cx + rw / 2f, cy + rh / 2f
-        )
-    } else crosshairOverlay.thermalRect = RectF()
+        if (thermalContainer.visibility == View.VISIBLE &&
+            cameraView.width > 0 && cameraView.height > 0) {
+            val locT = IntArray(2); cameraView.getLocationOnScreen(locT)
+            val locR = IntArray(2); rootLayout.getLocationOnScreen(locR)
+            val l = (locT[0] - locR[0]).toFloat()
+            val t = (locT[1] - locR[1]).toFloat()
+            val w = cameraView.width.toFloat()
+            val h = cameraView.height.toFloat()
+            val cx = l + w / 2f
+            val cy = t + h / 2f
+            val rot = thermalRotationDegrees
+            val rw = if (rot == 90 || rot == 270) h else w
+            val rh = if (rot == 90 || rot == 270) w else h
+            crosshairOverlay.thermalRect = RectF(
+                cx - rw / 2f, cy - rh / 2f, cx + rw / 2f, cy + rh / 2f
+            )
+        } else crosshairOverlay.thermalRect = RectF()
 
-    if (opticalContainer.visibility == View.VISIBLE &&
-        phoneCameraView.width > 0 && phoneCameraView.height > 0) {
-        val locO = IntArray(2); phoneCameraView.getLocationOnScreen(locO)
-        val locR = IntArray(2); rootLayout.getLocationOnScreen(locR)
-        crosshairOverlay.opticalRect = RectF(
-            (locO[0] - locR[0]).toFloat(),
-            (locO[1] - locR[1]).toFloat(),
-            (locO[0] - locR[0] + phoneCameraView.width).toFloat(),
-            (locO[1] - locR[1] + phoneCameraView.height).toFloat()
-        )
-    } else crosshairOverlay.opticalRect = RectF()
+        if (opticalContainer.visibility == View.VISIBLE &&
+            phoneCameraView.width > 0 && phoneCameraView.height > 0) {
+            val locO = IntArray(2); phoneCameraView.getLocationOnScreen(locO)
+            val locR = IntArray(2); rootLayout.getLocationOnScreen(locR)
+            crosshairOverlay.opticalRect = RectF(
+                (locO[0] - locR[0]).toFloat(),
+                (locO[1] - locR[1]).toFloat(),
+                (locO[0] - locR[0] + phoneCameraView.width).toFloat(),
+                (locO[1] - locR[1] + phoneCameraView.height).toFloat()
+            )
+        } else crosshairOverlay.opticalRect = RectF()
 
-    crosshairOverlay.invalidate()
-}
+        crosshairOverlay.invalidate()
+    }
 
     private fun adjustThermalViewBounds() {
         val cw = thermalContainer.width
@@ -662,11 +673,9 @@ if (bmp != null) {
         btnRecord.isRecording = isRecording
 
         if (isRecording) {
-            // Красный скруглённый фон при записи
             tvRecordIndicator.setBackgroundColor(0xCCE53935.toInt())
             tvRecordIndicator.visibility = View.VISIBLE
         } else {
-            // Прозрачный фон в покое, белый текст
             tvRecordIndicator.setBackgroundColor(Color.TRANSPARENT)
             val label = if (recordingController.isLoopRecording) "ЦИКЛ (3м)" else "НЕПРЕРЫВ"
             tvRecordIndicator.text = "РЕЖИМ: $label"
