@@ -76,8 +76,7 @@ class InternalVideoRecorder(
         try {
             outputFile.parentFile?.mkdirs()
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-                setInteger(MediaFormat.KEY_COLOR_FORMAT,
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
+                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
                 setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
@@ -190,7 +189,8 @@ class InternalVideoRecorder(
                 }
                 opticalBmp?.let {
                     val area = RectF(splitX.toFloat(), 0f, width.toFloat(), height.toFloat())
-                    drawBitmapCrop(it, area, bitmapPaint)
+                    // Исправлено: вместо crop используем fit, чтобы не растягивало
+                    drawBitmapFit(it, area, bitmapPaint)
                     opticalArea.set(area)
                 }
             }
@@ -204,7 +204,7 @@ class InternalVideoRecorder(
             displayMode == 2 -> {
                 opticalBmp?.let {
                     val area = RectF(0f, 0f, width.toFloat(), height.toFloat())
-                    drawBitmapCrop(it, area, bitmapPaint)
+                    drawBitmapFit(it, area, bitmapPaint)
                     opticalArea.set(area)
                 }
             }
@@ -317,9 +317,7 @@ class InternalVideoRecorder(
         val targetH = if (norm == 90 || norm == 270) src.width else src.height
 
         val existing = if (isThermal) thermalRotatedCache else opticalRotatedCache
-        val cache: Bitmap = if (existing != null &&
-            existing.width == targetW && existing.height == targetH &&
-            !existing.isRecycled) {
+        val cache: Bitmap = if (existing != null && existing.width == targetW && existing.height == targetH && !existing.isRecycled) {
             existing
         } else {
             val newBmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
@@ -392,8 +390,7 @@ class InternalVideoRecorder(
                 try {
                     mediaCodec?.let { c ->
                         val i = c.dequeueInputBuffer(10_000)
-                        if (i >= 0) c.queueInputBuffer(i, 0, 0, lastPtsUs + 1000L,
-                            MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        if (i >= 0) c.queueInputBuffer(i, 0, 0, lastPtsUs + 1000L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                     }
                     drainCodec(true)
                 } catch (_: Exception) {}
