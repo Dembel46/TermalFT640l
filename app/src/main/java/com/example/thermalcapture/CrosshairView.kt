@@ -2,14 +2,12 @@ package com.example.thermalcapture
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
-import android.graphics.Shader
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
@@ -34,21 +32,21 @@ class CrosshairView @JvmOverloads constructor(
     private val thinWidth = 1.2f * density
     private val dotRadius = 1.5f * density
 
-    private val negSize = 120
-    private val totalNegPixels = negSize * negSize
+    // === НОВОЕ: сегментация для правильного контраста ===
+    private val SEGMENTS_PER_RAY = 10
+    private val GRAY_MIN = 140f
+    private val SAMPLE_RADIUS = 2
 
-    private val opticalNegativeBitmap = Bitmap.createBitmap(negSize, negSize, Bitmap.Config.ARGB_8888)
-    private val opticalRawPixels = IntArray(totalNegPixels)
-    private val opticalNegPixels = IntArray(totalNegPixels)
-    private val opticalShader = BitmapShader(opticalNegativeBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-    private val opticalMatrix = Matrix()
+    private val optTones = Array(4) { FloatArray(SEGMENTS_PER_RAY) { 255f } }
+    private val thmTones = Array(4) { FloatArray(SEGMENTS_PER_RAY) { 255f } }
+    private var optToneCenter = 255f
+    private var thmToneCenter = 255f
 
-    private val thermalRawBitmap = Bitmap.createBitmap(negSize, negSize, Bitmap.Config.ARGB_8888)
-    private val thermalNegativeBitmap = Bitmap.createBitmap(negSize, negSize, Bitmap.Config.ARGB_8888)
-    private val thermalRawPixels = IntArray(totalNegPixels)
-    private val thermalNegPixels = IntArray(totalNegPixels)
-    private val thermalShader = BitmapShader(thermalNegativeBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-    private val thermalMatrix = Matrix()
+    private val sampleSize = 200
+    private val opticalSampleBitmap = Bitmap.createBitmap(sampleSize, sampleSize, Bitmap.Config.ARGB_8888)
+    private val thermalSampleBitmap = Bitmap.createBitmap(sampleSize, sampleSize, Bitmap.Config.ARGB_8888)
+    private val opticalPixels = IntArray(sampleSize * sampleSize)
+    private val thermalPixels = IntArray(sampleSize * sampleSize)
 
     private val reticlePaint = Paint().apply {
         strokeCap = Paint.Cap.ROUND
@@ -118,13 +116,10 @@ class CrosshairView @JvmOverloads constructor(
 
     var thermalRect = RectF()
     var opticalRect = RectF()
+    var thermalRotation: Int = 0 // 0, 90, 180, 270
 
     var phoneCameraView: PreviewView? = null
     var thermalCameraView: TextureView? = null
-    
-    // Аппаратные кеши для нулевого выделения памяти
-    private var opticalFullCache: Bitmap? = null
-    private var thermalFullCache: Bitmap? = null
 
     var detectedTargets: List<DetectedTarget> = emptyList()
         set(value) { field = value; invalidate() }
@@ -141,7 +136,7 @@ class CrosshairView @JvmOverloads constructor(
             updateThermalFast()
             invalidate()
             if (isSamplingActive) {
-                sampleHandler.postDelayed(this, 33)
+                sampleHandler.postDelayed(this, 100) // 10 Hz достаточно для сэмплов
             }
         }
     }
@@ -158,131 +153,104 @@ class CrosshairView @JvmOverloads constructor(
         sampleHandler.removeCallbacks(sampleRunnable)
     }
 
+    private fun avgLuma(pixels: IntArray, w: Int, h: Int, cx: Int, cy: Int): Float {
+        var sum = 0f
+        var count = 0
+        val r = SAMPLE_RADIUS
+        for (dy in -r..r) {
+            for (dx in -r..r) {
+                val x = (cx + dx).coerceIn(0, w - 1)
+                val y = (cy + dy).coerceIn(0, h - 1)
+                val p = pixels[y * w + x]
+                sum += 0.299f * ((p shr 16) and 0xFF) + 0.587f * ((p shr 8) and 0xFF) + 0.114f * (p and 0xFF)
+                count++
+            }
+        }
+        return if (count > 0) sum / count else 128f
+    }
+
+    private fun toTone(luma: Float): Float {
+        val t = (luma / 255f).coerceIn(0f, 1f)
+        return 255f - t * (255f - GRAY_MIN)
+    }
+
     private fun updateOpticalFast() {
         val pView = phoneCameraView ?: return
         if (pView.visibility != View.VISIBLE || pView.width <= 0 || pView.height <= 0) return
-
         val textureView = pView.getChildAt(0) as? TextureView ?: return
         if (!textureView.isAvailable) return
 
-        if (opticalFullCache == null || opticalFullCache!!.width != textureView.width || opticalFullCache!!.height != textureView.height) {
-            opticalFullCache?.recycle()
-            opticalFullCache = Bitmap.createBitmap(textureView.width, textureView.height, Bitmap.Config.ARGB_8888)
+        textureView.getBitmap(opticalSampleBitmap)
+        opticalSampleBitmap.getPixels(opticalPixels, 0, sampleSize, 0, 0, sampleSize, sampleSize)
+
+        val cx = (opticalRect.centerX() + opticalOffsetX) - pView.x
+        val cy = (opticalRect.centerY() + opticalOffsetY) - pView.y
+        val nx = (cx / pView.width).coerceIn(0f, 1f)
+        val ny = (cy / pView.height).coerceIn(0f, 1f)
+        val bx = (nx * (sampleSize - 1)).roundToInt()
+        val by = (ny * (sampleSize - 1)).roundToInt()
+
+        val segPxX = ((reticleLength - centerGap) / SEGMENTS_PER_RAY / pView.width * sampleSize).coerceAtLeast(1f)
+        val segPxY = ((reticleLength - centerGap) / SEGMENTS_PER_RAY / pView.height * sampleSize).coerceAtLeast(1f)
+        val gapPxX = (centerGap / pView.width * sampleSize).coerceAtLeast(1f)
+        val gapPxY = (centerGap / pView.height * sampleSize).coerceAtLeast(1f)
+
+        optToneCenter = optToneCenter * 0.65f + toTone(avgLuma(opticalPixels, sampleSize, sampleSize, bx, by)) * 0.35f
+
+        for (i in 0 until SEGMENTS_PER_RAY) {
+            val offsetX = (gapPxX + segPxX * (i + 0.5f)).roundToInt()
+            val lx = (bx - offsetX).coerceIn(0, sampleSize - 1)
+            val rx = (bx + offsetX).coerceIn(0, sampleSize - 1)
+            optTones[0][i] = optTones[0][i] * 0.65f + toTone(avgLuma(opticalPixels, sampleSize, sampleSize, lx, by)) * 0.35f
+            optTones[1][i] = optTones[1][i] * 0.65f + toTone(avgLuma(opticalPixels, sampleSize, sampleSize, rx, by)) * 0.35f
+
+            val offsetY = (gapPxY + segPxY * (i + 0.5f)).roundToInt()
+            val ty = (by - offsetY).coerceIn(0, sampleSize - 1)
+            val byy = (by + offsetY).coerceIn(0, sampleSize - 1)
+            optTones[2][i] = optTones[2][i] * 0.65f + toTone(avgLuma(opticalPixels, sampleSize, sampleSize, bx, ty)) * 0.35f
+            optTones[3][i] = optTones[3][i] * 0.65f + toTone(avgLuma(opticalPixels, sampleSize, sampleSize, bx, byy)) * 0.35f
         }
-
-        val fullBitmap = opticalFullCache!!
-        try {
-            if (textureView.getBitmap(fullBitmap) == null) {
-                isOpticalReady = false
-                return
-            }
-
-            val scaleX = fullBitmap.width.toFloat() / pView.width
-            val scaleY = fullBitmap.height.toFloat() / pView.height
-
-            val cx = (opticalRect.centerX() + opticalOffsetX) - pView.x
-            val cy = (opticalRect.centerY() + opticalOffsetY) - pView.y
-
-            val centerBmpX = (cx * scaleX).roundToInt()
-            val centerBmpY = (cy * scaleY).roundToInt()
-
-            val maxLeft = (fullBitmap.width - negSize).coerceAtLeast(0)
-            val maxTop = (fullBitmap.height - negSize).coerceAtLeast(0)
-
-            val leftPx = (centerBmpX - negSize / 2).coerceIn(0, maxLeft)
-            val topPx = (centerBmpY - negSize / 2).coerceIn(0, maxTop)
-
-            fullBitmap.getPixels(opticalRawPixels, 0, negSize, leftPx, topPx, negSize, negSize)
-
-            for (i in 0 until totalNegPixels) {
-                val p = opticalRawPixels[i]
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                val luma = (r * 77 + g * 150 + b * 29) shr 8
-
-                val rawNeg = 255 - luma
-                val contrastNeg = if (rawNeg > 128) {
-                    (128 + (rawNeg - 128) * 1.4f).toInt().coerceIn(0, 255)
-                } else {
-                    (128 - (128 - rawNeg) * 1.4f).toInt().coerceIn(0, 255)
-                }
-                opticalNegPixels[i] = 0xFF000000.toInt() or (contrastNeg shl 16) or (contrastNeg shl 8) or contrastNeg
-            }
-            opticalNegativeBitmap.setPixels(opticalNegPixels, 0, negSize, 0, 0, negSize, negSize)
-
-            val screenLeft = leftPx / scaleX + pView.x
-            val screenTop = topPx / scaleY + pView.y
-
-            opticalMatrix.reset()
-            opticalMatrix.setScale(1f / scaleX, 1f / scaleY)
-            opticalMatrix.postTranslate(screenLeft, screenTop)
-            opticalShader.setLocalMatrix(opticalMatrix)
-
-            isOpticalReady = true
-        } catch (_: Exception) {
-            isOpticalReady = false
-        }
+        isOpticalReady = true
     }
 
     private fun updateThermalFast() {
         val tView = thermalCameraView ?: return
         if (tView.visibility != View.VISIBLE || !tView.isAvailable || tView.width <= 0 || tView.height <= 0) return
 
-        if (thermalFullCache == null || thermalFullCache!!.width != tView.width || thermalFullCache!!.height != tView.height) {
-            thermalFullCache?.recycle()
-            thermalFullCache = Bitmap.createBitmap(tView.width, tView.height, Bitmap.Config.ARGB_8888)
-        }
-        val fullBitmap = thermalFullCache!!
-
         try {
-            if (tView.getBitmap(fullBitmap) == null) {
+            if (tView.getBitmap(thermalSampleBitmap) == null) {
                 isThermalReady = false
                 return
             }
-
-            val scaleX = fullBitmap.width.toFloat() / tView.width
-            val scaleY = fullBitmap.height.toFloat() / tView.height
+            thermalSampleBitmap.getPixels(thermalPixels, 0, sampleSize, 0, 0, sampleSize, sampleSize)
 
             val cx = thermalRect.centerX() - tView.x
             val cy = thermalRect.centerY() - tView.y
+            val nx = (cx / tView.width).coerceIn(0f, 1f)
+            val ny = (cy / tView.height).coerceIn(0f, 1f)
+            val bx = (nx * (sampleSize - 1)).roundToInt()
+            val by = (ny * (sampleSize - 1)).roundToInt()
 
-            val centerBmpX = (cx * scaleX).roundToInt()
-            val centerBmpY = (cy * scaleY).roundToInt()
+            val segPxX = ((reticleLength - centerGap) / SEGMENTS_PER_RAY / tView.width * sampleSize).coerceAtLeast(1f)
+            val segPxY = ((reticleLength - centerGap) / SEGMENTS_PER_RAY / tView.height * sampleSize).coerceAtLeast(1f)
+            val gapPxX = (centerGap / tView.width * sampleSize).coerceAtLeast(1f)
+            val gapPxY = (centerGap / tView.height * sampleSize).coerceAtLeast(1f)
 
-            val maxLeft = (fullBitmap.width - negSize).coerceAtLeast(0)
-            val maxTop = (fullBitmap.height - negSize).coerceAtLeast(0)
+            thmToneCenter = thmToneCenter * 0.65f + toTone(avgLuma(thermalPixels, sampleSize, sampleSize, bx, by)) * 0.35f
 
-            val leftPx = (centerBmpX - negSize / 2).coerceIn(0, maxLeft)
-            val topPx = (centerBmpY - negSize / 2).coerceIn(0, maxTop)
+            for (i in 0 until SEGMENTS_PER_RAY) {
+                val offsetX = (gapPxX + segPxX * (i + 0.5f)).roundToInt()
+                val lx = (bx - offsetX).coerceIn(0, sampleSize - 1)
+                val rx = (bx + offsetX).coerceIn(0, sampleSize - 1)
+                thmTones[0][i] = thmTones[0][i] * 0.65f + toTone(avgLuma(thermalPixels, sampleSize, sampleSize, lx, by)) * 0.35f
+                thmTones[1][i] = thmTones[1][i] * 0.65f + toTone(avgLuma(thermalPixels, sampleSize, sampleSize, rx, by)) * 0.35f
 
-            fullBitmap.getPixels(thermalRawPixels, 0, negSize, leftPx, topPx, negSize, negSize)
-
-            for (i in 0 until totalNegPixels) {
-                val p = thermalRawPixels[i]
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                val luma = (r * 77 + g * 150 + b * 29) shr 8
-
-                val rawNeg = 255 - luma
-                val contrastNeg = if (rawNeg > 128) {
-                    (128 + (rawNeg - 128) * 1.4f).toInt().coerceIn(0, 255)
-                } else {
-                    (128 - (128 - rawNeg) * 1.4f).toInt().coerceIn(0, 255)
-                }
-                thermalNegPixels[i] = 0xFF000000.toInt() or (contrastNeg shl 16) or (contrastNeg shl 8) or contrastNeg
+                val offsetY = (gapPxY + segPxY * (i + 0.5f)).roundToInt()
+                val ty = (by - offsetY).coerceIn(0, sampleSize - 1)
+                val byy = (by + offsetY).coerceIn(0, sampleSize - 1)
+                thmTones[2][i] = thmTones[2][i] * 0.65f + toTone(avgLuma(thermalPixels, sampleSize, sampleSize, bx, ty)) * 0.35f
+                thmTones[3][i] = thmTones[3][i] * 0.65f + toTone(avgLuma(thermalPixels, sampleSize, sampleSize, bx, byy)) * 0.35f
             }
-            thermalNegativeBitmap.setPixels(thermalNegPixels, 0, negSize, 0, 0, negSize, negSize)
-
-            val screenLeft = leftPx / scaleX + tView.x
-            val screenTop = topPx / scaleY + tView.y
-
-            thermalMatrix.reset()
-            thermalMatrix.setScale(1f / scaleX, 1f / scaleY)
-            thermalMatrix.postTranslate(screenLeft, screenTop)
-            thermalShader.setLocalMatrix(thermalMatrix)
-
             isThermalReady = true
         } catch (_: Exception) {
             isThermalReady = false
@@ -327,15 +295,20 @@ class CrosshairView @JvmOverloads constructor(
             }
         }
 
-        if (isThermalVisible) {
-            drawFastReticle(canvas, thermalRect.centerX(), thermalRect.centerY(),
-                if (isThermalReady) thermalShader else null)
+        canvas.save()
+        // Компенсируем поворот вокруг центра thermalRect
+        if (thermalRotation != 0) {
+            canvas.rotate(thermalRotation.toFloat(), thermalRect.centerX(), thermalRect.centerY())
         }
+        if (isThermalVisible) {
+            drawSegmentedReticle(canvas, thermalRect.centerX(), thermalRect.centerY(), thmToneCenter, thmTones)
+        }
+        canvas.restore()
 
         if (isOpticalVisible && !isHybridMode) {
             val cx = opticalRect.centerX() + opticalOffsetX
             val cy = opticalRect.centerY() + opticalOffsetY
-            drawFastReticle(canvas, cx, cy, if (isOpticalReady) opticalShader else null)
+            drawSegmentedReticle(canvas, cx, cy, optToneCenter, optTones)
 
             if (isCalibrationMode) {
                 val distR = opticalRect.right - cx - 10f * density
@@ -360,8 +333,7 @@ class CrosshairView @JvmOverloads constructor(
                 val tH = justTextPaint.textSize
                 val tagY = (cy - boxHalf - 8f * density).coerceAtLeast(opticalRect.top + tH + 6f * density)
                 val tagX = (cx - tW / 2f).coerceIn(opticalRect.left + 6f * density, opticalRect.right - tW - 6f * density)
-                canvas.drawRect(tagX - 5f * density, tagY - tH - 3f * density,
-                    tagX + tW + 5f * density, tagY + 3f * density, justBgPaint)
+                canvas.drawRect(tagX - 5f * density, tagY - tH - 3f * density, tagX + tW + 5f * density, tagY + 3f * density, justBgPaint)
                 canvas.drawText(text, tagX, tagY, justTextPaint)
             }
         }
@@ -369,72 +341,83 @@ class CrosshairView @JvmOverloads constructor(
         if (isHybridMode) {
             val trackW = 8f * density
             val trackH = 180f * density
-            val trackLeft = 16f * density
+            // Смещаем правее, чтобы не наезжать на гамбургер
+            val trackLeft = 70f * density
             val trackTop = (height - trackH) / 2f
             val trackBottom = trackTop + trackH
-            canvas.drawRoundRect(RectF(trackLeft, trackTop, trackLeft + trackW, trackBottom),
-                4f * density, 4f * density, sliderTrackPaint)
+            canvas.drawRoundRect(RectF(trackLeft, trackTop, trackLeft + trackW, trackBottom), 4f * density, 4f * density, sliderTrackPaint)
             val fillHeight = trackH * hybridAlpha
-            canvas.drawRoundRect(RectF(trackLeft, trackBottom - fillHeight, trackLeft + trackW, trackBottom),
-                4f * density, 4f * density, sliderProgressPaint)
+            canvas.drawRoundRect(RectF(trackLeft, trackBottom - fillHeight, trackLeft + trackW, trackBottom), 4f * density, 4f * density, sliderProgressPaint)
             val percentText = String.format("ТЕПЛО %d%%", (hybridAlpha * 100).roundToInt())
             canvas.drawText(percentText, trackLeft, trackTop - 8f * density, sliderTextPaint)
         }
     }
 
-    private fun drawFastReticle(canvas: Canvas, cx: Float, cy: Float, shader: BitmapShader?) {
-        if (shader != null) {
-            reticlePaint.shader = shader
-            fillPaint.shader = shader
-        } else {
-            reticlePaint.shader = null
-            reticlePaint.color = Color.WHITE
-            reticlePaint.strokeWidth = thickWidth + 1f
-            fillPaint.shader = null
-            fillPaint.color = Color.WHITE
-        }
-
+    private fun drawSegmentedReticle(canvas: Canvas, cx: Float, cy: Float, toneCenter: Float, tones: Array<FloatArray>) {
         val halfThick = thickWidth / 2f
         val halfThin = thinWidth / 2f
 
+        fillPaint.color = Color.rgb(toneCenter.roundToInt().coerceIn(0, 255), toneCenter.roundToInt().coerceIn(0, 255), toneCenter.roundToInt().coerceIn(0, 255))
         canvas.drawCircle(cx, cy, dotRadius, fillPaint)
 
-        reticlePaint.strokeWidth = if (shader != null) thickWidth else thickWidth + 1f
-        canvas.drawLine(cx - reticleLength, cy, cx - taperStart, cy, reticlePaint)
+        drawTaperZone(canvas, cx, cy, taperStart, halfThick, halfThin, tones[0][0], tones[1][0], tones[2][0], tones[3][0])
+
+        val totalLen = reticleLength - taperStart
+        val segLen = totalLen / SEGMENTS_PER_RAY
+
+        for (i in 0 until SEGMENTS_PER_RAY) {
+            val start = taperStart + i * segLen
+            val end = start + segLen
+            reticlePaint.strokeWidth = thickWidth
+
+            reticlePaint.color = getGrayColor(tones[0][i]); canvas.drawLine(cx - start, cy, cx - end, cy, reticlePaint)
+            reticlePaint.color = getGrayColor(tones[1][i]); canvas.drawLine(cx + start, cy, cx + end, cy, reticlePaint)
+            reticlePaint.color = getGrayColor(tones[2][i]); canvas.drawLine(cx, cy - start, cx, cy - end, reticlePaint)
+            reticlePaint.color = getGrayColor(tones[3][i]); canvas.drawLine(cx, cy + start, cx, cy + end, reticlePaint)
+        }
+    }
+
+    private fun drawTaperZone(canvas: Canvas, cx: Float, cy: Float, start: Float, halfThick: Float, halfThin: Float, toneL: Float, toneR: Float, toneT: Float, toneB: Float) {
+        fillPaint.color = getGrayColor(toneL)
         taperPath.reset()
-        taperPath.moveTo(cx - taperStart, cy - halfThick)
+        taperPath.moveTo(cx - start, cy - halfThick)
         taperPath.lineTo(cx - centerGap, cy - halfThin)
         taperPath.lineTo(cx - centerGap, cy + halfThin)
-        taperPath.lineTo(cx - taperStart, cy + halfThick)
+        taperPath.lineTo(cx - start, cy + halfThick)
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
 
-        canvas.drawLine(cx + taperStart, cy, cx + reticleLength, cy, reticlePaint)
+        fillPaint.color = getGrayColor(toneR)
         taperPath.reset()
-        taperPath.moveTo(cx + taperStart, cy - halfThick)
+        taperPath.moveTo(cx + start, cy - halfThick)
         taperPath.lineTo(cx + centerGap, cy - halfThin)
         taperPath.lineTo(cx + centerGap, cy + halfThin)
-        taperPath.lineTo(cx + taperStart, cy + halfThick)
+        taperPath.lineTo(cx + start, cy + halfThick)
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
 
-        canvas.drawLine(cx, cy - reticleLength, cx, cy - taperStart, reticlePaint)
+        fillPaint.color = getGrayColor(toneT)
         taperPath.reset()
-        taperPath.moveTo(cx - halfThick, cy - taperStart)
+        taperPath.moveTo(cx - halfThick, cy - start)
         taperPath.lineTo(cx - halfThin, cy - centerGap)
         taperPath.lineTo(cx + halfThin, cy - centerGap)
-        taperPath.lineTo(cx + halfThick, cy - taperStart)
+        taperPath.lineTo(cx + halfThick, cy - start)
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
 
-        canvas.drawLine(cx, cy + taperStart, cx, cy + reticleLength, reticlePaint)
+        fillPaint.color = getGrayColor(toneB)
         taperPath.reset()
-        taperPath.moveTo(cx - halfThick, cy + taperStart)
+        taperPath.moveTo(cx - halfThick, cy + start)
         taperPath.lineTo(cx - halfThin, cy + centerGap)
         taperPath.lineTo(cx + halfThin, cy + centerGap)
-        taperPath.lineTo(cx + halfThick, cy + taperStart)
+        taperPath.lineTo(cx + halfThick, cy + start)
         taperPath.close()
         canvas.drawPath(taperPath, fillPaint)
+    }
+
+    private fun getGrayColor(tone: Float): Int {
+        val v = tone.roundToInt().coerceIn(0, 255)
+        return Color.rgb(v, v, v)
     }
 
     private var lastTouchX = 0f
@@ -443,9 +426,11 @@ class CrosshairView @JvmOverloads constructor(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (isHybridMode && !isCalibrationMode) {
-            val touchAreaWidth = 120f * density
+            // Обновляем зону захвата ползунка (сдвинуто правее)
+            val touchAreaLeft = 60f * density
+            val touchAreaRight = 90f * density
             when (event.action) {
-                MotionEvent.ACTION_DOWN -> if (event.x <= touchAreaWidth) {
+                MotionEvent.ACTION_DOWN -> if (event.x in touchAreaLeft..touchAreaRight) {
                     isDraggingSlider = true
                     lastTouchY = event.y
                     return true
@@ -463,9 +448,7 @@ class CrosshairView @JvmOverloads constructor(
         }
         if (isCalibrationMode) {
             when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    lastTouchX = event.x; lastTouchY = event.y; return true
-                }
+                MotionEvent.ACTION_DOWN -> { lastTouchX = event.x; lastTouchY = event.y; return true }
                 MotionEvent.ACTION_MOVE -> {
                     opticalOffsetX += event.x - lastTouchX
                     opticalOffsetY += event.y - lastTouchY
