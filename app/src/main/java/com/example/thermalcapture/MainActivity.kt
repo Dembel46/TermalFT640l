@@ -50,7 +50,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var tvRecordIndicator: TextView
     private lateinit var sidebarContent: LinearLayout
-    private lateinit var btnToggleSidebar: Button
     private lateinit var btnMode: Button
     private lateinit var btnCalibrate: Button
     private lateinit var btnTracking: Button
@@ -58,12 +57,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnRecord: RecordButtonView
     private lateinit var btnThermalRotate: Button
     private lateinit var btnSettings: Button
-    private lateinit var btnThermalFullscreen: Button
     private lateinit var btnHybrid: Button
     private lateinit var btnZoom: Button
     private lateinit var btnContrastType: Button
 
-    // Виньетка
     private lateinit var flashOverlay: View
 
     private lateinit var storageManager: StorageManager
@@ -89,9 +86,8 @@ class MainActivity : AppCompatActivity() {
     private val thermalAnalyzeBmp = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
 
     private var displayMode = 1
-    private var isThermalFullscreen = true
     private var isHybridModeActive = false
-    private var isSidebarExpanded = true
+    private var isSidebarExpanded = false
     private var currentZoomIndex = 0
     private var thermalAspectW = 4
     private var thermalAspectH = 3
@@ -143,8 +139,7 @@ class MainActivity : AppCompatActivity() {
 
         rootLayout.post {
             setSplitRatio(1.0f, 0.0f, "ТЕПЛО 100%")
-            btnThermalFullscreen.text = "⤡"
-            resetSidebarTimer()
+            collapseSidebar()
         }
     }
 
@@ -173,7 +168,6 @@ class MainActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tvStatus)
         tvRecordIndicator = findViewById(R.id.tvRecordIndicator)
         sidebarContent = findViewById(R.id.sidebarContent)
-        btnToggleSidebar = findViewById(R.id.btnToggleSidebar)
         btnMode = findViewById(R.id.btnMode)
         btnCalibrate = findViewById(R.id.btnCalibrate)
         btnTracking = findViewById(R.id.btnTracking)
@@ -181,7 +175,6 @@ class MainActivity : AppCompatActivity() {
         btnRecord = findViewById(R.id.btnRecordCenter)
         btnThermalRotate = findViewById(R.id.btnThermalRotate)
         btnSettings = findViewById(R.id.btnSettings)
-        btnThermalFullscreen = findViewById(R.id.btnThermalFullscreen)
         btnHybrid = findViewById(R.id.btnHybrid)
         btnZoom = findViewById(R.id.btnZoom)
         btnContrastType = findViewById(R.id.btnContrastType)
@@ -199,7 +192,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // ✅ 4.3: колбэк приходит из UVC-потока — переводим на main
                 override fun onSerialDeviceAttached(device: UsbDevice) {
                     runOnUiThread {
                         if (serialController.connect(this@MainActivity, device)) {
@@ -313,16 +305,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
-        btnToggleSidebar.setOnClickListener {
+        // Шестерёнка открывает/закрывает шторку
+        btnSettings.setOnClickListener {
             if (isSidebarExpanded) collapseSidebar() else expandSidebar()
         }
-        btnSettings.setOnClickListener { resetSidebarTimer(); settingsDialogs.showMain() }
         btnPhoto.setOnClickListener { resetSidebarTimer(); ensureStorage { takeScreenshotPhoto() } }
         btnRecord.setOnClickListener { resetSidebarTimer(); ensureStorage { toggleRecording() } }
         btnRecord.setOnLongClickListener { resetSidebarTimer(); showRecordModeDialog(); true }
         btnHybrid.setOnClickListener { resetSidebarTimer(); toggleHybrid() }
         btnTracking.setOnClickListener { resetSidebarTimer(); toggleTracking() }
-        btnThermalFullscreen.setOnClickListener { resetSidebarTimer(); toggleFullscreen() }
         btnMode.setOnClickListener { resetSidebarTimer(); cycleDisplayMode() }
         btnCalibrate.setOnClickListener { resetSidebarTimer(); toggleCalibration() }
         btnZoom.setOnClickListener { resetSidebarTimer(); cycleZoom() }
@@ -353,7 +344,6 @@ class MainActivity : AppCompatActivity() {
                     val active = isThermalStreaming && cameraView.width > 0 && cameraView.isAvailable
                     if (active) {
                         try {
-                            // ✅ 4.3: без copy — движок сам масштабирует
                             val bmp = cameraView.getBitmap(thermalAnalyzeBmp)
                             if (bmp != null) {
                                 dispatchFrameToVision(thermalAnalyzeBmp)
@@ -376,7 +366,6 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    // ✅ 4.3: не рециклим thermalAnalyzeBmp и не копируем его
     private fun dispatchFrameToVision(bmp: Bitmap) {
         isProcessingFrame = true
         visionHandler.post {
@@ -431,7 +420,6 @@ class MainActivity : AppCompatActivity() {
         cameraController.initThermalCamera()
     }
 
-    // ✅ 4.3: учитываем поворот тепловизора при расчёте thermalRect
     private fun updateOverlayBounds() {
         adjustThermalViewBounds()
 
@@ -505,14 +493,12 @@ class MainActivity : AppCompatActivity() {
     private fun collapseSidebar() {
         isSidebarExpanded = false
         sidebarContent.visibility = View.GONE
-        btnToggleSidebar.text = "▶"
         sidebarHandler.removeCallbacks(hideSidebarRunnable)
     }
 
     private fun expandSidebar() {
         isSidebarExpanded = true
         sidebarContent.visibility = View.VISIBLE
-        btnToggleSidebar.text = "◀"
         resetSidebarTimer()
     }
 
@@ -527,9 +513,9 @@ class MainActivity : AppCompatActivity() {
                 "Свайп вверх/вниз слева — прозрачность", Toast.LENGTH_SHORT).show()
         } else {
             btnHybrid.text = "ГИБРИД"
-            btnHybrid.setBackgroundColor(0xFF444444.toInt())
+            btnHybrid.setBackgroundColor(0xCC333333.toInt())
             cameraView.alpha = 1f
-            setSplitRatio(1f, 0f, "ТЕПЛО 100%")
+            setSplitRatio(1f, 0f, "ТЕПЛО 100")
         }
     }
 
@@ -546,40 +532,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun toggleFullscreen() {
-        if (isHybridModeActive) {
-            isHybridModeActive = false
-            crosshairOverlay.isHybridMode = false
-            btnHybrid.text = "ГИБРИД"
-            btnHybrid.setBackgroundColor(0xFF444444.toInt())
-            cameraView.alpha = 1f
-        }
-        if (!isThermalFullscreen) {
-            isThermalFullscreen = true
-            btnThermalFullscreen.text = "⤡"
-            setSplitRatio(1f, 0f, "ТЕПЛО 100%")
-        } else {
-            isThermalFullscreen = false
-            btnThermalFullscreen.text = "⛶"
-            setSplitRatio(0.7f, 0.3f, "70/30")
-        }
-    }
-
     private fun cycleDisplayMode() {
         if (isHybridModeActive) {
             isHybridModeActive = false
             crosshairOverlay.isHybridMode = false
             btnHybrid.text = "ГИБРИД"
-            btnHybrid.setBackgroundColor(0xFF444444.toInt())
+            btnHybrid.setBackgroundColor(0xCC333333.toInt())
             cameraView.alpha = 1f
         }
         displayMode = (displayMode + 1) % 3
-        isThermalFullscreen = (displayMode == 1)
-        btnThermalFullscreen.text = if (isThermalFullscreen) "⤡" else "⛶"
         when (displayMode) {
             0 -> setSplitRatio(0.7f, 0.3f, "70/30")
-            1 -> setSplitRatio(1f, 0f, "ТЕПЛО 100%")
-            2 -> setSplitRatio(0f, 1f, "ОПТИКА 100%")
+            1 -> setSplitRatio(1f, 0f, "ТЕПЛО 100")
+            2 -> setSplitRatio(0f, 1f, "ОПТИКА 100")
         }
     }
 
@@ -640,7 +605,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Лёгкая белая виньетка по периметру на ~1.5 сек после фото. */
     private fun showPhotoFlash() {
         val overlay = flashOverlay ?: return
         overlay.visibility = View.VISIBLE
@@ -679,6 +643,7 @@ class MainActivity : AppCompatActivity() {
             tvRecordIndicator.setBackgroundColor(Color.TRANSPARENT)
             val label = if (recordingController.isLoopRecording) "ЦИКЛ (3м)" else "НЕПРЕРЫВ"
             tvRecordIndicator.text = "РЕЖИМ: $label"
+            tvRecordIndicator.setTextColor(Color.WHITE)
             tvRecordIndicator.visibility = View.VISIBLE
         }
     }
