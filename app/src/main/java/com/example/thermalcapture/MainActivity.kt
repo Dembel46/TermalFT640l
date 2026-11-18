@@ -335,9 +335,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyThermalRotation() {
-        cameraView.rotation = thermalRotationDegrees.toFloat()
-        rootLayout.post { updateOverlayBounds() }
-    }
+    cameraView.rotation = thermalRotationDegrees.toFloat()
+    // Передаем угол в CrosshairView, чтобы он поворачивал прицел вместе с картинкой
+    crosshairOverlay.thermalRotation = thermalRotationDegrees
+    rootLayout.post { updateOverlayBounds() }
+}
 
     private fun initVisionPipeline() {
         visionThread = HandlerThread("VisionProcessingThread").apply { start() }
