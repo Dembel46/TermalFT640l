@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var tvRecordIndicator: TextView
     private lateinit var sidebarContent: LinearLayout
+    private lateinit var btnSidebarToggle: Button
     private lateinit var btnMode: Button
     private lateinit var btnCalibrate: Button
     private lateinit var btnTracking: Button
@@ -138,7 +139,7 @@ class MainActivity : AppCompatActivity() {
         updateRecordUiState()
 
         rootLayout.post {
-            setSplitRatio(1.0f, 0.0f, "ТЕПЛО 100%")
+            setSplitRatio(1.0f, 0.0f, "ТЕПЛО 100")
             collapseSidebar()
         }
     }
@@ -168,6 +169,7 @@ class MainActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tvStatus)
         tvRecordIndicator = findViewById(R.id.tvRecordIndicator)
         sidebarContent = findViewById(R.id.sidebarContent)
+        btnSidebarToggle = findViewById(R.id.btnSidebarToggle)
         btnMode = findViewById(R.id.btnMode)
         btnCalibrate = findViewById(R.id.btnCalibrate)
         btnTracking = findViewById(R.id.btnTracking)
@@ -305,10 +307,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initButtons() {
-        // Шестерёнка открывает/закрывает шторку
-        btnSettings.setOnClickListener {
+        // Шестерёнка → меню настроек (showMain)
+        btnSettings.setOnClickListener { settingsDialogs.showMain() }
+
+        // Гамбургер → выпадающее меню слева
+        btnSidebarToggle.setOnClickListener {
             if (isSidebarExpanded) collapseSidebar() else expandSidebar()
         }
+
         btnPhoto.setOnClickListener { resetSidebarTimer(); ensureStorage { takeScreenshotPhoto() } }
         btnRecord.setOnClickListener { resetSidebarTimer(); ensureStorage { toggleRecording() } }
         btnRecord.setOnLongClickListener { resetSidebarTimer(); showRecordModeDialog(); true }
