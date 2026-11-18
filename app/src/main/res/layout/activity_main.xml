@@ -89,7 +89,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Шестерёнка: справа сверху -->
+    <!-- Шестерёнка: справа сверху → меню настроек -->
     <Button
         android:id="@+id/btnSettings"
         style="?android:attr/buttonBarButtonStyle"
@@ -103,18 +103,34 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Боковая шторка: только ТРЕК, ЮСТИРОВКА, ПАЛИТРА -->
+    <!-- Кнопка-гамбургер слева по центру -->
+    <Button
+        android:id="@+id/btnSidebarToggle"
+        style="?android:attr/buttonBarButtonStyle"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_marginStart="10dp"
+        android:background="#CC333333"
+        android:text="☰"
+        android:textColor="#FFFFFF"
+        android:textSize="20sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Выпадающее меню слева по центру: ТРЕК, ЮСТИРОВКА, ПАЛИТРА -->
     <LinearLayout
         android:id="@+id/sidebarContent"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="8dp"
-        android:layout_marginTop="8dp"
         android:orientation="vertical"
         android:background="#AA000000"
         android:padding="4dp"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/tvStatus">
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toEndOf="@id/btnSidebarToggle"
+        app:layout_constraintTop_toTopOf="parent">
 
         <Button
             android:id="@+id/btnTracking"
@@ -144,7 +160,7 @@
             android:textSize="12sp" />
     </LinearLayout>
 
-    <!-- Нижний левый ряд: поворот, гибрид, палитра, тепло 100, зум -->
+    <!-- Нижний левый ряд: поворот, гибрид, тепло 100, зум -->
     <LinearLayout
         android:id="@+id/bottomBarLeft"
         android:layout_width="wrap_content"
@@ -176,19 +192,6 @@
             android:text="ГИБРИД"
             android:textColor="#FFFFFF"
             android:textSize="12sp" />
-
-        <Button
-            android:id="@+id/btnContrastTypeBottom"
-            style="?android:attr/buttonBarButtonStyle"
-            android:layout_width="wrap_content"
-            android:layout_height="48dp"
-            android:layout_marginEnd="6dp"
-            android:background="#CC333333"
-            android:paddingHorizontal="10dp"
-            android:text="ПАЛИТРА"
-            android:textColor="#FFFFFF"
-            android:textSize="12sp"
-            android:visibility="gone" />
 
         <Button
             android:id="@+id/btnMode"
