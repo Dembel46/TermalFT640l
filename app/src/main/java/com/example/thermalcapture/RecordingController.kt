@@ -38,7 +38,7 @@ class RecordingController(
     }
 
     companion object {
-        private const val FRAME_INTERVAL_MS = 66L   // 15 FPS
+        private const val FRAME_INTERVAL_MS = 66L   // ~15 FPS
         private const val OPTICAL_EVERY_N = 2
         private const val LOOP_SEGMENT_SEC = 180
     }
@@ -139,36 +139,38 @@ class RecordingController(
             val thermalView = ui.thermalView
             val opticalView = ui.opticalView
 
+            // === Тепло: getBitmap возвращает Boolean, не Bitmap ===
             var freshThermal: Bitmap? = null
             if (ui.isThermalStreaming() && thermalView != null && thermalView.isAvailable) {
                 try {
-                    if (thermalView.getBitmap(thermalBmp) != null) freshThermal = thermalBmp
+                    val ok = thermalView.getBitmap(thermalBmp)
+                    if (ok) freshThermal = thermalBmp
                 } catch (_: Exception) { freshThermal = null }
             }
             if (freshThermal != null) lastThermalFrame = freshThermal
             val tBmp: Bitmap? = freshThermal ?: lastThermalFrame
 
-            // Оптика — раз в N кадров через безопасный битмап PreviewView
+            // === Оптика: PreviewView.bitmap на main, синхронно с таймаутом ===
             var freshOptical: Bitmap? = null
             if (opticalView != null && opticalView.visibility == View.VISIBLE
                 && frameCounter % OPTICAL_EVERY_N == 0) {
                 val ref = AtomicReference<Bitmap?>(null)
-                val done = Object()
+                val lock = Object()
                 mainHandler.post {
                     try {
                         val b = opticalView.bitmap
-                        if (b != null) {
+                        if (b != null && b.width > 0 && b.height > 0) {
                             srcRect.set(0, 0, b.width, b.height)
                             opticalCanvas.drawBitmap(b, srcRect, dstRect, null)
                             ref.set(opticalBmp)
                         }
                     } catch (_: Exception) {
                     } finally {
-                        synchronized(done) { done.notifyAll() }
+                        synchronized(lock) { lock.notifyAll() }
                     }
                 }
-                synchronized(done) {
-                    try { done.wait(80) } catch (_: InterruptedException) {}
+                synchronized(lock) {
+                    try { lock.wait(80) } catch (_: InterruptedException) {}
                 }
                 freshOptical = ref.get()
                 if (freshOptical != null) lastOpticalFrame = freshOptical
