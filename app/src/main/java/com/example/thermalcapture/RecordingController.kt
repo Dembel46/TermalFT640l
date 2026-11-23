@@ -38,7 +38,7 @@ class RecordingController(
     }
 
     companion object {
-        private const val FRAME_INTERVAL_MS = 66L   // ~15 FPS
+        private const val FRAME_INTERVAL_MS = 50L   // ~20 FPS
         private const val OPTICAL_EVERY_N = 2
         private const val LOOP_SEGMENT_SEC = 180
     }
