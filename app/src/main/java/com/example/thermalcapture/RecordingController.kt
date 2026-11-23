@@ -144,7 +144,7 @@ class RecordingController(
             if (ui.isThermalStreaming() && thermalView != null && thermalView.isAvailable) {
                 try {
                     val ok = thermalView.getBitmap(thermalBmp)   // ← возвращает Boolean
-if (ok) freshThermal = thermalBmp             // ← OK
+if (thermalView.getBitmap(thermalBmp)) freshThermal = thermalBmp             // ← OK
                 } catch (_: Exception) { freshThermal = null }
             }
             if (freshThermal != null) lastThermalFrame = freshThermal
