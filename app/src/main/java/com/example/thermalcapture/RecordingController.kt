@@ -139,16 +139,18 @@ class RecordingController(
             val thermalView = ui.thermalView
             val opticalView = ui.opticalView
 
-            // === Тепло: getBitmap возвращает Boolean, не Bitmap ===
-            var freshThermal: Bitmap? = null
-            if (ui.isThermalStreaming() && thermalView != null && thermalView.isAvailable) {
-                try {
-                    val ok = thermalView.getBitmap(thermalBmp)   // ← возвращает Boolean
-if (thermalView.getBitmap(thermalBmp)) freshThermal = thermalBmp             // ← OK
-                } catch (_: Exception) { freshThermal = null }
-            }
-            if (freshThermal != null) lastThermalFrame = freshThermal
-            val tBmp: Bitmap? = freshThermal ?: lastThermalFrame
+            // === Тепло: getBitmap возвращает Boolean ===
+var freshThermal: Bitmap? = null
+if (ui.isThermalStreaming() && thermalView != null && thermalView.isAvailable) {
+    try {
+        val ok = thermalView.getBitmap(thermalBmp)
+        if (ok) freshThermal = thermalBmp
+    } catch (_: Exception) {
+        freshThermal = null
+    }
+}
+if (freshThermal != null) lastThermalFrame = freshThermal
+val tBmp: Bitmap? = freshThermal ?: lastThermalFrame
 
             // === Оптика: PreviewView.bitmap на main, синхронно с таймаутом ===
             var freshOptical: Bitmap? = null
